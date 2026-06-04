@@ -1,7 +1,7 @@
 import { MixingBrain, type DeckContext, type Technique } from './MixingBrain'
 
-const CROSSFADE_SEC = 8
-const BPM_RAMP_MS = 3000
+const CROSSFADE_SEC = 10
+const BPM_RAMP_MS = 6000  // slower ramp = less audible pitch shift
 const LOAD_TIMEOUT_MS = 12000
 const PRELOAD_TIMEOUT_MS = 15000
 
@@ -456,8 +456,9 @@ export class MixingEngine {
     const nxt = this.queue[nextIdx]
 
     if (cur.bpm && nxt.bpm) {
-      const target = Math.max(0.85, Math.min(1.15, nxt.bpm / cur.bpm))
-      this.rampPlaybackRate(this.activeAudio, target, BPM_RAMP_MS)
+      // Clamp to ±6% — beyond that it sounds like a tape malfunction
+      const target = Math.max(0.94, Math.min(1.06, nxt.bpm / cur.bpm))
+      if (Math.abs(target - 1) > 0.01) this.rampPlaybackRate(this.activeAudio, target, BPM_RAMP_MS)
     }
 
     // Let the brain pick and execute the transition technique
@@ -466,11 +467,9 @@ export class MixingEngine {
 
     // Sound effect: pick one that matches the transition style
     const energyJump = (nxt.energy ?? 5) - (cur.energy ?? 5)
-    if (technique === 'spinback') this.playEffect('scratch')
-    else if (technique === 'echo-wash') { /* echo itself is the texture */ }
-    else if (energyJump >= 2.5) this.playEffect('air-horn')
-    else if (cur.energy >= 7 && nxt.energy >= 7) this.playEffect('siren')
-    else if (energyJump >= 1.5) this.playEffect('riser')
+    // Sound effects only on big energy jumps — keep it tasteful
+    if (technique === 'spinback' && energyJump >= 2) this.playEffect('scratch')
+    else if (energyJump >= 3.5) this.playEffect('riser')
 
     this.brain.execute(technique, {
       ctx: this.ctx,

@@ -9,7 +9,18 @@
 body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
+  /* Prevent iOS bounce scroll */
+  overscroll-behavior: none;
 }
+
+/* Full-height that accounts for iOS dynamic toolbar */
+.min-h-screen {
+  min-height: 100dvh;
+}
+
+/* Safe area padding helpers for iPhone notch / home bar */
+.safe-top    { padding-top:    env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 
 input[type='range'] {
   -webkit-appearance: none;

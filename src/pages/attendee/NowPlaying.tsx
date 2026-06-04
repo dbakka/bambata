@@ -19,6 +19,7 @@ export default function NowPlaying() {
   const [durationMin, setDurationMin] = useState<number | null>(null)
   const [reactionCount, setReactionCount] = useState(0)
   const [particles, setParticles] = useState<Particle[]>([])
+  const [timeUp, setTimeUp] = useState(false)
   const lastReactAt = useRef(0)
 
   const socket = usePartySocket(partyId ?? '')
@@ -112,7 +113,7 @@ export default function NowPlaying() {
       ))}
 
       {/* Header: logo + timer */}
-      <div className="flex items-center justify-between px-5 pt-6 pb-2 flex-shrink-0">
+      <div className="flex items-center justify-between px-5 pt-6 pb-2 flex-shrink-0 safe-top">
         <span className="text-xs font-mono tracking-[0.3em]" style={{ color: '#1e1e2e' }}>
           BAMBATA
         </span>
@@ -128,7 +129,7 @@ export default function NowPlaying() {
                 className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                 style={{ background: isCritical ? '#ef4444' : isNearEnd ? '#ff9500' : '#22c55e' }}
               />
-              <CountdownTimer endsAt={endsAt} showLabel className="text-xs" />
+              <CountdownTimer endsAt={endsAt} showLabel className="text-xs" onExpire={() => setTimeUp(true)} />
             </div>
           )}
           <button
@@ -179,9 +180,17 @@ export default function NowPlaying() {
 
             {/* Tap hint */}
             {playing && (
-              <p className="text-[10px] font-mono tracking-widest" style={{ color: '#1e1e2e' }}>
-                TAP ANYWHERE TO REACT
-              </p>
+              <div className="flex flex-col items-center gap-2">
+                <div
+                  className="px-5 py-2.5 rounded-full text-xs font-mono tracking-widest"
+                  style={{ background: 'rgba(255,107,53,0.12)', border: '1px solid rgba(255,107,53,0.25)', color: '#ff6b35' }}
+                >
+                  TAP TO REACT 🔥
+                </div>
+                <p className="text-[10px] font-mono" style={{ color: '#3a3a5a' }}>
+                  tap anywhere on screen
+                </p>
+              </div>
             )}
           </>
         ) : (
@@ -199,9 +208,45 @@ export default function NowPlaying() {
         )}
       </div>
 
+      {/* Time-up overlay — prompt to extend */}
+      {timeUp && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center"
+          style={{ background: 'rgba(5,5,8,0.96)' }}
+        >
+          <div className="text-4xl mb-4">⏱</div>
+          <h2 className="text-2xl font-black tracking-wider mb-2" style={{ color: '#e2e8f0', fontFamily: 'JetBrains Mono, monospace' }}>
+            TIME'S UP
+          </h2>
+          <p className="text-sm mb-8" style={{ color: '#475569' }}>
+            Your free session ended. Extend the party to keep the music going.
+          </p>
+          <div className="w-full max-w-xs flex flex-col gap-3">
+            {[
+              { label: '30 MIN', price: '$2', color: '#00d2ff' },
+              { label: '1 HOUR', price: '$4', color: '#a78bfa' },
+              { label: '3 HOURS', price: '$10', color: '#ff6b35' },
+            ].map(opt => (
+              <button
+                key={opt.label}
+                className="w-full py-4 rounded-xl font-bold text-sm tracking-wider flex items-center justify-between px-5"
+                style={{ background: `rgba(${opt.color === '#00d2ff' ? '0,210,255' : opt.color === '#a78bfa' ? '167,139,250' : '255,107,53'},0.1)`, border: `1px solid ${opt.color}40`, color: opt.color, fontFamily: 'JetBrains Mono, monospace' }}
+                onClick={() => alert('Payments coming soon — ask the creator to extend!')}
+              >
+                <span>{opt.label}</span>
+                <span>{opt.price}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] font-mono mt-6" style={{ color: '#3a3a5a' }}>
+            Payments launching soon
+          </p>
+        </div>
+      )}
+
       {/* Party progress + end warning */}
       {endsAt && (
-        <div className="px-5 pb-8 flex-shrink-0">
+        <div className="px-5 pb-8 safe-bottom flex-shrink-0">
           {isNearEnd && (
             <p className="text-center text-xs font-mono mb-3" style={{ color: isCritical ? '#ef4444' : '#ff9500' }}>
               {isCritical ? 'PARTY ENDING SOON' : 'LAST 15 MINUTES'}
