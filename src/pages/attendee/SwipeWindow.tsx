@@ -164,6 +164,11 @@ export default function SwipeWindow() {
   if (tracks.length > 0 && unanswered.length === 0 && !showSuggest) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-4 text-center" style={{ background: '#050508' }}>
+        {party?.name && (
+          <p className="text-[10px] font-mono tracking-widest mb-6" style={{ color: '#3a3a5a' }}>
+            {party.name.toUpperCase()}
+          </p>
+        )}
         <div className="w-full max-w-sm flex flex-col items-center gap-6">
           <div
             className="w-16 h-16 rounded-full flex items-center justify-center"
@@ -198,14 +203,31 @@ export default function SwipeWindow() {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#050508' }}>
-      {/* Top bar */}
-      <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid #1e1e2e' }}>
+      {/* Party identity header */}
+      <div className="px-5 pt-5 pb-3 safe-top" style={{ borderBottom: '1px solid #0f0f17' }}>
+        <p className="text-[10px] font-mono tracking-widest mb-0.5" style={{ color: '#3a3a5a' }}>NOW VOTING FOR</p>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0">
+            <h1 className="text-lg font-black leading-tight truncate" style={{ color: '#e2e8f0' }}>
+              {party?.name ?? '—'}
+            </h1>
+            {party?.venue && (
+              <p className="text-xs font-mono truncate" style={{ color: '#475569' }}>{party.venue}</p>
+            )}
+          </div>
+          {party?.swipe_ends_at && (
+            <div className="flex-shrink-0 ml-3">
+              <CountdownTimer endsAt={party.swipe_ends_at} onExpire={() => navigate(`/party/${partyId}/closed`)} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Action bar */}
+      <div className="px-4 py-2 flex items-center justify-between" style={{ borderBottom: '1px solid #1e1e2e' }}>
         <span className="text-xs font-mono" style={{ color: '#475569' }}>
           {swipedCount} voted
         </span>
-        {party?.swipe_ends_at && (
-          <CountdownTimer endsAt={party.swipe_ends_at} onExpire={() => navigate(`/party/${partyId}/closed`)} />
-        )}
         <button
           onClick={() => { setSuggestSearch(''); setShowSuggest(true); setTimeout(() => searchRef.current?.focus(), 100) }}
           className="text-xs font-mono px-3 py-1 rounded-lg"
