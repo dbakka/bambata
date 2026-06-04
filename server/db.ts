@@ -140,6 +140,7 @@ try { db.exec(`ALTER TABLE tracks ADD COLUMN audiomack_url TEXT`) } catch {}
 try { db.exec(`ALTER TABLE parties ADD COLUMN started_at INTEGER`) } catch {}
 try { db.exec(`ALTER TABLE passes ADD COLUMN device_id TEXT`) } catch {}
 try { db.exec(`ALTER TABLE parties ADD COLUMN device_id TEXT`) } catch {}
+try { db.exec(`ALTER TABLE token_requests ADD COLUMN track_id TEXT`) } catch {}
 
 // Engagement: track reactions from attendees
 db.exec(`
@@ -153,5 +154,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_reactions_party_track ON track_reactions(party_id, track_id);
 `)
+try { db.exec(`ALTER TABLE track_reactions ADD COLUMN direction TEXT DEFAULT 'up'`) } catch {}
+try { db.exec(`ALTER TABLE track_reactions ADD COLUMN rating INTEGER`) } catch {}
 
 export default db

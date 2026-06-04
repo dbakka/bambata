@@ -16,7 +16,7 @@ export interface AccessCode {
   id: string
   party_id: string
   code: string
-  type: 'pass' | 'tokens'
+  type: 'pass' | 'tokens' | 'extension'
   token_amount: number | null
   redeemed_by_pass_id: string | null
   created_at: number

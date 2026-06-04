@@ -10,6 +10,7 @@ import PassPage from './pages/attendee/PassPage'
 import SwipeWindow from './pages/attendee/SwipeWindow'
 import Lobby from './pages/attendee/Lobby'
 import ClosedState from './pages/attendee/ClosedState'
+import PartyEnded from './pages/attendee/PartyEnded'
 import NowPlaying from './pages/attendee/NowPlaying'
 import Leaderboard from './pages/attendee/Leaderboard'
 
@@ -27,6 +28,7 @@ export default function App() {
       <Route path="/party/:partyId/swipe" element={<SwipeWindow />} />
       <Route path="/party/:partyId/lobby" element={<Lobby />} />
       <Route path="/party/:partyId/closed" element={<ClosedState />} />
+      <Route path="/party/:partyId/ended" element={<PartyEnded />} />
       <Route path="/party/:partyId/now" element={<NowPlaying />} />
       <Route path="/party/:partyId/leaderboard" element={<Leaderboard />} />
     </Routes>

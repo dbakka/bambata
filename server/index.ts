@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
 import { Server as SocketServer } from 'socket.io'
@@ -6,7 +7,11 @@ import { v4 as uuidv4 } from 'uuid'
 import { Readable } from 'stream'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { Resend } from 'resend'
 import db from './db.js'
+
+// Set RESEND_API_KEY in .env to enable real email sending
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -64,14 +69,24 @@ interface Track {
 }
 
 function buildQueue(partyId: string): Track[] {
-  // Voted tracks form the energy arc; unvoted (creator picks, etc.) fill the end
-  const voted = db
-    .prepare('SELECT * FROM tracks WHERE party_id = ? AND swipe_count > 0 ORDER BY swipe_count DESC')
-    .all(partyId) as Track[]
+  // Join left-swipe counts so we can honour crowd rejection signals
+  const allTracks = db.prepare(`
+    SELECT t.*,
+      COALESCE(ls.left_count, 0) AS left_count
+    FROM tracks t
+    LEFT JOIN (
+      SELECT track_id, COUNT(*) AS left_count
+      FROM swipes WHERE direction = 'left'
+      GROUP BY track_id
+    ) ls ON t.id = ls.track_id
+    WHERE t.party_id = ?
+  `).all(partyId) as (Track & { left_count: number })[]
 
-  const unvoted = db
-    .prepare('SELECT * FROM tracks WHERE party_id = ? AND swipe_count = 0')
-    .all(partyId) as Track[]
+  // Exclude tracks the crowd rejected more than accepted
+  const accepted = allTracks.filter((t) => t.left_count <= t.swipe_count)
+
+  const voted   = accepted.filter((t) => t.swipe_count > 0)
+  const unvoted = accepted.filter((t) => t.swipe_count === 0)
 
   if (voted.length === 0 && unvoted.length === 0) return []
 
@@ -201,14 +216,27 @@ async function resolveStreamUrl(rawUrl: string | null, title?: string, artist?: 
 // ─── Auto-close interval ─────────────────────────────────────────────────────
 setInterval(() => {
   const now = Date.now()
+
+  // Auto-close expired swipe windows
   const openParties = db
     .prepare(
       "SELECT id, swipe_ends_at FROM parties WHERE status = 'swipe_open' AND swipe_ends_at IS NOT NULL AND swipe_ends_at <= ?",
     )
     .all(now) as { id: string; swipe_ends_at: number }[]
-
   for (const party of openParties) {
     closeSwipeWindow(party.id)
+  }
+
+  // Auto-end parties whose full duration has elapsed (started_at stored in ms)
+  const expiredParties = db
+    .prepare(
+      "SELECT id FROM parties WHERE status = 'mixing' AND started_at IS NOT NULL AND (started_at + duration_min * 60000) <= ?"
+    )
+    .all(now) as { id: string }[]
+  for (const party of expiredParties) {
+    db.prepare("UPDATE parties SET status = 'done' WHERE id = ?").run(party.id)
+    io.to(`party:${party.id}`).emit('party:done', { partyId: party.id })
+    io.to(`creator:${party.id}`).emit('party:done', { partyId: party.id })
   }
 }, 5000)
 
@@ -244,6 +272,23 @@ app.post('/api/parties', (req, res) => {
 
   const party = db.prepare('SELECT * FROM parties WHERE id = ?').get(id) as Record<string, unknown>
   res.json({ ...party, creatorToken })
+})
+
+// GET /api/creator/parties — all parties created by this device/token
+app.get('/api/creator/parties', (req, res) => {
+  const deviceId = req.headers['x-device-id'] as string | undefined
+  const creatorToken = req.headers['x-creator-token'] as string | undefined
+  if (!deviceId && !creatorToken) { res.status(401).json({ error: 'Unauthorized' }); return }
+  const col = deviceId ? 'p.device_id' : 'p.creator_token'
+  const param = deviceId ?? creatorToken
+  const parties = db.prepare(`
+    SELECT p.id, p.name, p.date, p.venue, p.genre_mode, p.status, p.duration_min, p.started_at, p.created_at,
+      (SELECT COUNT(*) FROM passes WHERE party_id = p.id) AS pass_count,
+      (SELECT COUNT(*) FROM tracks WHERE party_id = p.id) AS track_count
+    FROM parties p WHERE ${col} = ?
+    ORDER BY p.created_at DESC LIMIT 30
+  `).all(param)
+  res.json(parties)
 })
 
 // GET /api/parties/:id
@@ -348,12 +393,12 @@ app.post('/api/parties/:id/codes', (req, res) => {
   }
 
   const { type, count, tokenAmount } = req.body as {
-    type: 'pass' | 'tokens'
+    type: 'pass' | 'tokens' | 'extension'
     count: number
     tokenAmount?: number
   }
 
-  const prefix = type === 'pass' ? 'B' : 'T'
+  const prefix = type === 'pass' ? 'B' : type === 'extension' ? 'E' : 'T'
   const generated: unknown[] = []
 
   for (let i = 0; i < count; i++) {
@@ -805,6 +850,35 @@ app.post('/api/parties/:id/tokens/redeem', (req, res) => {
   res.json({ success: true, balance: wallet.balance })
 })
 
+// POST /api/parties/:id/extend — redeem an extension code to add time to the party
+app.post('/api/parties/:id/extend', (req, res) => {
+  const { id } = req.params
+  const { code } = req.body as { code: string }
+
+  if (!code?.trim()) { res.status(400).json({ error: 'Code required' }); return }
+
+  const accessCode = db.prepare(
+    "SELECT * FROM access_codes WHERE UPPER(code) = UPPER(?) AND party_id = ? AND type = 'extension'"
+  ).get(code.trim(), id) as { id: string; token_amount: number | null; redeemed_by_pass_id: string | null } | undefined
+
+  if (!accessCode) { res.status(404).json({ error: 'Invalid extension code' }); return }
+  if (accessCode.redeemed_by_pass_id) { res.status(400).json({ error: 'Code already used' }); return }
+
+  const extraMin = accessCode.token_amount ?? 30
+  db.prepare('UPDATE parties SET duration_min = duration_min + ? WHERE id = ?').run(extraMin, id)
+  db.prepare("UPDATE access_codes SET redeemed_by_pass_id = 'redeemed' WHERE id = ?").run(accessCode.id)
+
+  const party = db.prepare('SELECT duration_min, started_at FROM parties WHERE id = ?').get(id) as
+    | { duration_min: number; started_at: number | null } | undefined
+  if (!party) { res.status(404).json({ error: 'Party not found' }); return }
+
+  const endsAt = party.started_at ? party.started_at + party.duration_min * 60000 : null
+  io.to(`party:${id}`).emit('party:extended', { durationMin: party.duration_min, endsAt })
+  io.to(`creator:${id}`).emit('party:extended', { durationMin: party.duration_min, endsAt })
+
+  res.json({ success: true, durationMin: party.duration_min, extraMin })
+})
+
 // POST /api/parties/:id/requests
 app.post('/api/parties/:id/requests', (req, res) => {
   const { id } = req.params
@@ -1006,39 +1080,49 @@ function estimateBPM(genre?: string): number | null {
 
 const SEED_QUERIES: Record<string, string[]> = {
   'Hip-Hop': [
-    'hip hop banger 2024',
-    'rap hits party',
-    'trap banger dancefloor',
-    'drill rap 2024',
-    'hip hop party anthem',
+    'hip hop 2024',
+    'rap hits 2024',
+    'trap music 2024',
+    'drill rap',
+    'hip hop classics',
+    'rap anthems',
+    'urban hip hop',
   ],
   'House': [
-    'house music 2024',
-    'tech house dj',
-    'afro house dance 2024',
-    'deep house electronic',
-    'house music club',
+    'house music',
+    'tech house',
+    'afro house',
+    'deep house',
+    'disco house',
+    'soulful house',
+    'progressive house',
   ],
   'Afrobeats': [
     'afrobeats 2024',
-    'amapiano dance hits',
-    'afropop party banger',
-    'afroswing UK 2024',
-    'naija afrobeats 2024',
+    'amapiano 2024',
+    'afropop',
+    'afroswing',
+    'naija music 2024',
+    'african pop hits',
+    'afrobeats classics',
   ],
   'R&B': [
-    'rnb hits 2024',
-    'neo soul vibes',
-    'contemporary rnb banger',
-    'smooth rnb party',
-    'rnb slow jam',
+    'rnb 2024',
+    'neo soul',
+    'contemporary rnb',
+    'smooth rnb',
+    'urban rnb',
+    'rnb ballads',
+    'rnb pop hits',
   ],
   'Open Format': [
-    'party anthem 2024',
-    'club hit dancefloor 2024',
-    'dance party summer 2024',
-    'banger dancefloor',
-    'radio hit 2024',
+    'top hits 2024',
+    'pop hits 2024',
+    'hip hop 2024',
+    'afrobeats 2024',
+    'rnb hits 2024',
+    'summer hits',
+    'chart hits',
   ],
 }
 
@@ -1069,16 +1153,55 @@ function insertItunesTrack(partyId: string, r: iTunesTrack, addedBy = 'bambata_s
   )
 }
 
+// Map iTunes primaryGenreName → our genre query buckets
+const ITUNES_GENRE_MAP: Record<string, string[]> = {
+  'Hip-Hop': ['hip hop 2024', 'rap hits 2024', 'trap music 2024', 'drill rap'],
+  'Rap': ['rap hits 2024', 'trap music 2024', 'hip hop 2024', 'drill rap'],
+  'R&B': ['rnb 2024', 'neo soul', 'contemporary rnb', 'smooth rnb'],
+  'Soul': ['neo soul', 'rnb 2024', 'smooth rnb'],
+  'Pop': ['pop hits 2024', 'top hits 2024', 'summer hits'],
+  'Electronic': ['house music', 'tech house', 'deep house', 'progressive house'],
+  'Dance': ['house music', 'tech house', 'disco house'],
+  'House': ['tech house', 'afro house', 'deep house', 'disco house'],
+  'Afro': ['afrobeats 2024', 'amapiano 2024', 'afropop', 'afroswing', 'naija music 2024'],
+  'African': ['afrobeats 2024', 'afropop', 'naija music 2024', 'afroswing'],
+  'Reggae': ['reggae hits', 'dancehall 2024', 'reggaeton'],
+  'Latin': ['reggaeton', 'latin hits 2024', 'latin pop'],
+}
+
+function detectGenreQueries(itunesResults: iTunesTrack[]): string[] {
+  const counts = new Map<string, number>()
+  for (const r of itunesResults) {
+    if (!r.primaryGenreName) continue
+    // Match against known genre keywords
+    for (const [key, queries] of Object.entries(ITUNES_GENRE_MAP)) {
+      if (r.primaryGenreName.toLowerCase().includes(key.toLowerCase())) {
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+        break
+      }
+    }
+  }
+  if (counts.size === 0) return []
+  // Pick the top two detected genres and return their query lists merged
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2)
+  const queries = new Set<string>()
+  for (const [key] of sorted) {
+    for (const q of ITUNES_GENRE_MAP[key] ?? []) queries.add(q)
+  }
+  return [...queries]
+}
+
 async function bambataSeed(partyId: string, genreMode: string) {
-  const existing = db.prepare('SELECT LOWER(title) as t, artist FROM tracks WHERE party_id = ?')
-    .all(partyId) as { t: string; artist: string }[]
+  const existing = db.prepare('SELECT LOWER(title) as t, artist, added_by FROM tracks WHERE party_id = ?')
+    .all(partyId) as { t: string; artist: string; added_by: string }[]
 
   const TARGET = 14
   if (existing.length >= TARGET) return
 
-  const existingTitles = new Set(existing.map((r) => r.t))
-  // Unique artists already in the party — search for more songs by them first
-  const existingArtists = [...new Set(existing.map((r) => r.artist).filter(Boolean))].slice(0, 4)
+  // Exclude titles already used in ANY party so different parties get different tracks
+  const allUsedTitles = new Set(
+    (db.prepare('SELECT LOWER(title) as t FROM tracks').all() as { t: string }[]).map((r) => r.t)
+  )
   const needed = TARGET - existing.length
 
   const candidateMap = new Map<string, iTunesTrack>()
@@ -1086,22 +1209,35 @@ async function bambataSeed(partyId: string, genreMode: string) {
     for (const t of tracks) {
       if (!t.trackName) continue
       const key = `${t.trackName.toLowerCase()}|||${(t.artistName ?? '').toLowerCase()}`
-      if (!existingTitles.has(t.trackName.toLowerCase()) && !candidateMap.has(key)) {
+      if (!allUsedTitles.has(t.trackName.toLowerCase()) && !candidateMap.has(key)) {
         candidateMap.set(key, t)
       }
     }
   }
 
-  // Strategy 1 — more songs by artists already in this party's library
-  if (existingArtists.length > 0) {
-    await Promise.all(existingArtists.map((a) => iTunesSearch(a, 8).then(addCandidates)))
+  // Creator-added tracks are the strongest signal — prioritise their artists
+  const creatorArtists = [...new Set(
+    existing.filter((r) => r.added_by === 'creator').map((r) => r.artist).filter(Boolean)
+  )]
+
+  if (creatorArtists.length > 0) {
+    // Strategy 1 — more tracks by the exact same creators (most accurate)
+    const creatorResults = await Promise.all(creatorArtists.map((a) => iTunesSearch(a, 20)))
+    creatorResults.forEach(addCandidates)
+
+    // Strategy 2 — detect genre from creator tracks' iTunes metadata, use genre queries
+    const allCreatorMeta = creatorResults.flat()
+    const genreQueries = detectGenreQueries(allCreatorMeta)
+    const fallbackQueries = SEED_QUERIES[genreMode] ?? SEED_QUERIES['Open Format']
+    const styleQueries = genreQueries.length > 0 ? genreQueries : fallbackQueries
+    await Promise.all(styleQueries.slice(0, 5).map((q) => iTunesSearch(q, 25).then(addCandidates)))
+  } else {
+    // No creator tracks yet — fall back to pure genre queries
+    const allQueries = [...(SEED_QUERIES[genreMode] ?? SEED_QUERIES['Open Format'])].sort(() => Math.random() - 0.5)
+    await Promise.all(allQueries.map((q) => iTunesSearch(q, 25).then(addCandidates)))
   }
 
-  // Strategy 2 — genre-curated queries (3 queries to stay well within rate limits)
-  const genreQueries = (SEED_QUERIES[genreMode] ?? SEED_QUERIES['Open Format']).slice(0, 3)
-  await Promise.all(genreQueries.map((q) => iTunesSearch(q, 10).then(addCandidates)))
-
-  // Prefer tracks that have a playable preview URL, shuffle within each group
+  // Prefer tracks with a playable preview URL, shuffle within each group
   const all = [...candidateMap.values()]
   const withPreview    = all.filter((r) =>  r.previewUrl).sort(() => Math.random() - 0.5)
   const withoutPreview = all.filter((r) => !r.previewUrl).sort(() => Math.random() - 0.5)
@@ -1121,18 +1257,26 @@ async function bambataReseed(partyId: string) {
     .get(partyId) as { cnt: number }).cnt
   if (currentCount >= 20) return  // cap total tracks
 
-  // Top right-swiped artists are our strongest signal
+  // Right-swiped artists are primary signal; creator artists are fallback
   const topArtists = db.prepare(
     `SELECT artist, SUM(swipe_count) as score
      FROM tracks WHERE party_id = ? AND swipe_count > 0
      GROUP BY LOWER(artist) ORDER BY score DESC LIMIT 3`
   ).all(partyId) as { artist: string; score: number }[]
 
-  if (topArtists.length === 0) return
+  const creatorArtists = db.prepare(
+    `SELECT DISTINCT artist FROM tracks WHERE party_id = ? AND added_by = 'creator' AND artist IS NOT NULL`
+  ).all(partyId) as { artist: string }[]
 
+  const artistsToSearch = topArtists.length > 0
+    ? topArtists.map((a) => a.artist)
+    : creatorArtists.map((a) => a.artist)
+
+  if (artistsToSearch.length === 0) return
+
+  // Exclude titles from ALL parties so reseed also picks fresh tracks
   const existingTitles = new Set(
-    (db.prepare('SELECT LOWER(title) as t FROM tracks WHERE party_id = ?')
-      .all(partyId) as { t: string }[]).map((r) => r.t)
+    (db.prepare('SELECT LOWER(title) as t FROM tracks').all() as { t: string }[]).map((r) => r.t)
   )
 
   const candidateMap = new Map<string, iTunesTrack>()
@@ -1146,7 +1290,7 @@ async function bambataReseed(partyId: string) {
     }
   }
 
-  await Promise.all(topArtists.map((a) => iTunesSearch(a.artist, 8).then(addCandidates)))
+  await Promise.all(artistsToSearch.map((a) => iTunesSearch(a, 25).then(addCandidates)))
 
   const needed = 20 - currentCount
   const toAdd = [...candidateMap.values()]
@@ -1394,41 +1538,60 @@ app.get('/api/stream/:trackId', async (req, res) => {
 // ─── Now-playing state (in-memory, per party) ────────────────────────────────
 // Lets attendees get initial state when joining mid-set
 
-interface NowPlayingState { current: unknown; next: unknown }
+interface NowPlayingState { current: unknown; next: unknown; playing: boolean }
 const nowPlaying = new Map<string, NowPlayingState>()
 
 // Tastemaker leaderboard
-// Score = (reactions on your accepted requests × 2) + (reactions on tracks you loved that crowd also loved × 1)
+// Base score = upvotes you gave. Bonus: double points for reactions on tracks the crowd also loved (≥ 2 others also reacted)
 app.get('/api/parties/:id/leaderboard', (req, res) => {
   const pid = req.params.id
-  const scores = db.prepare(`
-    SELECT name, SUM(points) AS score, SUM(requests) AS requests FROM (
 
-      -- 2 pts per crowd reaction on a track YOU requested and got accepted
-      SELECT p.attendee_name AS name, COUNT(*) * 2 AS points, 1 AS requests
-      FROM token_requests tr
-      JOIN passes p ON p.id = tr.pass_id
-      JOIN track_reactions r ON r.track_id = tr.track_id
-      WHERE tr.party_id = ? AND tr.status = 'accepted' AND tr.track_id IS NOT NULL
-      GROUP BY tr.pass_id
+  // Tracks that at least 2 people upvoted (crowd-validated)
+  const hotTracks = new Set(
+    (db.prepare(`
+      SELECT track_id FROM track_reactions
+      WHERE party_id = ? AND (direction = 'up' OR direction IS NULL)
+      GROUP BY track_id HAVING COUNT(*) >= 2
+    `).all(pid) as { track_id: string }[]).map((r) => r.track_id)
+  )
 
-      UNION ALL
+  // All upvotes for this party grouped by attendee
+  const reactions = db.prepare(`
+    SELECT attendee_name AS name, track_id, COUNT(*) AS cnt
+    FROM track_reactions
+    WHERE party_id = ? AND (direction = 'up' OR direction IS NULL)
+      AND attendee_name IS NOT NULL
+    GROUP BY attendee_name, track_id
+  `).all(pid) as { name: string; track_id: string; cnt: number }[]
 
-      -- 1 pt per reaction on tracks you loved that the crowd also loved (≥ 3 reactions)
-      SELECT r.attendee_name AS name, COUNT(*) AS points, 0 AS requests
-      FROM track_reactions r
-      WHERE r.party_id = ? AND r.pass_id IS NOT NULL
-        AND r.track_id IN (
-          SELECT track_id FROM track_reactions WHERE party_id = ?
-          GROUP BY track_id HAVING COUNT(*) >= 3
-        )
-      GROUP BY r.pass_id
+  // Accepted token requests per attendee
+  const accepted = db.prepare(`
+    SELECT p.attendee_name AS name, COUNT(*) AS cnt
+    FROM token_requests tr
+    JOIN passes p ON p.id = tr.pass_id
+    WHERE tr.party_id = ? AND tr.status = 'accepted'
+    GROUP BY p.attendee_name
+  `).all(pid) as { name: string; cnt: number }[]
 
-    )
-    GROUP BY name
-    ORDER BY score DESC
-    LIMIT 10
-  `).all(pid, pid, pid) as { name: string; score: number; requests: number }[]
+  const scoreMap = new Map<string, { score: number; requests: number }>()
+  const ensure = (name: string) => { if (!scoreMap.has(name)) scoreMap.set(name, { score: 0, requests: 0 }) }
+
+  for (const r of reactions) {
+    ensure(r.name)
+    const pts = hotTracks.has(r.track_id) ? 2 : 1  // double points for crowd-validated tracks
+    scoreMap.get(r.name)!.score += pts * r.cnt
+  }
+  for (const a of accepted) {
+    ensure(a.name)
+    scoreMap.get(a.name)!.requests += a.cnt
+    scoreMap.get(a.name)!.score += a.cnt * 3  // 3 bonus points per accepted request
+  }
+
+  const scores = [...scoreMap.entries()]
+    .map(([name, v]) => ({ name, ...v }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+
   res.json(scores)
 })
 
@@ -1451,13 +1614,16 @@ app.get('/api/parties/:id/search', async (req, res) => {
 
 // Live reaction count for a track
 app.get('/api/parties/:id/reactions/:trackId', (req, res) => {
-  const { count } = db.prepare('SELECT COUNT(*) as count FROM track_reactions WHERE track_id = ?')
-    .get(req.params.trackId) as { count: number }
-  res.json({ count })
+  const row = db.prepare(`
+    SELECT AVG(rating) as avg_rating, COUNT(rating) as rating_count
+    FROM track_reactions WHERE track_id = ? AND rating IS NOT NULL
+  `).get(req.params.trackId) as { avg_rating: number | null; rating_count: number }
+  const avgRating = row.avg_rating ? Math.round(row.avg_rating * 10) / 10 : null
+  res.json({ avgRating, ratingCount: row.rating_count ?? 0 })
 })
 
 app.get('/api/parties/:id/now', (req, res) => {
-  const state = nowPlaying.get(req.params.id) ?? { current: null, next: null }
+  const state = nowPlaying.get(req.params.id) ?? { current: null, next: null, playing: false }
   const meta = db.prepare('SELECT started_at, duration_min FROM parties WHERE id = ?').get(req.params.id) as
     | { started_at: number | null; duration_min: number } | undefined
   res.json({ ...state, startedAt: meta?.started_at ?? null, durationMin: meta?.duration_min ?? 120 })
@@ -1562,12 +1728,15 @@ io.on('connection', (socket) => {
 
   // Player → store + broadcast current track to all attendees
   socket.on('player:track', (data: { partyId: string; current: unknown; next: unknown }) => {
-    nowPlaying.set(data.partyId, { current: data.current, next: data.next })
+    const prev = nowPlaying.get(data.partyId)
+    nowPlaying.set(data.partyId, { current: data.current, next: data.next, playing: prev?.playing ?? true })
     io.to(`party:${data.partyId}`).emit('player:track', { current: data.current, next: data.next })
   })
 
-  // Player → broadcast play/pause state
+  // Player → broadcast play/pause state and persist it
   socket.on('player:state', (data: { partyId: string; playing: boolean }) => {
+    const prev = nowPlaying.get(data.partyId)
+    if (prev) nowPlaying.set(data.partyId, { ...prev, playing: data.playing })
     io.to(`party:${data.partyId}`).emit('player:state', { playing: data.playing })
   })
 
@@ -1579,12 +1748,27 @@ io.on('connection', (socket) => {
   })
 
   // Attendee taps the reaction button while a track is playing
-  socket.on('track:react', (data: { partyId: string; trackId: string; passId?: string; attendeeName?: string }) => {
-    db.prepare('INSERT INTO track_reactions (id, party_id, track_id, pass_id, attendee_name) VALUES (?, ?, ?, ?, ?)')
-      .run(uuidv4(), data.partyId, data.trackId, data.passId ?? null, data.attendeeName ?? null)
-    const { count } = db.prepare('SELECT COUNT(*) as count FROM track_reactions WHERE track_id = ?')
-      .get(data.trackId) as { count: number }
-    io.to(`party:${data.partyId}`).emit('track:reacted', { trackId: data.trackId, count })
+  socket.on('track:react', (data: { partyId: string; trackId: string; passId?: string; attendeeName?: string; rating?: number }) => {
+    const rating = data.rating && data.rating >= 1 && data.rating <= 5 ? data.rating : null
+    const dir = rating ? (rating >= 4 ? 'up' : rating <= 2 ? 'down' : 'neutral') : 'up'
+
+    // One rating per (pass, track) — delete previous before inserting
+    if (data.passId && rating !== null) {
+      db.prepare('DELETE FROM track_reactions WHERE pass_id = ? AND track_id = ?').run(data.passId, data.trackId)
+    }
+    db.prepare('INSERT INTO track_reactions (id, party_id, track_id, pass_id, attendee_name, direction, rating) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), data.partyId, data.trackId, data.passId ?? null, data.attendeeName ?? null, dir, rating)
+
+    const stats = db.prepare(`
+      SELECT AVG(rating) as avg_rating, COUNT(rating) as rating_count
+      FROM track_reactions WHERE track_id = ? AND rating IS NOT NULL
+    `).get(data.trackId) as { avg_rating: number | null; rating_count: number }
+
+    io.to(`party:${data.partyId}`).emit('track:reacted', {
+      trackId: data.trackId,
+      avgRating: stats.avg_rating ? Math.round(stats.avg_rating * 10) / 10 : null,
+      ratingCount: stats.rating_count,
+    })
   })
 
   // Player → broadcast skipped track
@@ -1633,7 +1817,7 @@ app.patch('/api/account/:deviceId', (req, res) => {
 })
 
 // POST /api/account/:deviceId/otp — generate OTP for email verification
-app.post('/api/account/:deviceId/otp', (req, res) => {
+app.post('/api/account/:deviceId/otp', async (req, res) => {
   const { deviceId } = req.params
   const { email } = req.body as { email: string }
   if (!email?.includes('@')) { res.status(400).json({ error: 'Valid email required' }); return }
@@ -1651,9 +1835,33 @@ app.post('/api/account/:deviceId/otp', (req, res) => {
   )
   db.prepare('UPDATE device_accounts SET email = ?, email_verified = 0 WHERE id = ?').run(email.trim(), deviceId)
 
-  // TODO: plug nodemailer / Resend here — for now code is returned in response
   console.log(`[Bambata OTP] ${email} → ${code}`)
-  res.json({ sent: true, devCode: code })
+
+  if (resend) {
+    const { data, error } = await resend.emails.send({
+      from: 'Bambata <hello@dbakka.com>',
+      to: [email.trim()],
+      subject: 'Your Bambata verification code',
+      html: `
+        <div style="font-family:monospace;background:#050508;color:#e2e8f0;padding:32px;border-radius:12px;max-width:480px">
+          <div style="font-size:22px;font-weight:900;color:#00d2ff;letter-spacing:0.1em;margin-bottom:8px">BAMBATA</div>
+          <p style="color:#475569;margin-bottom:24px">Your verification code:</p>
+          <div style="font-size:40px;font-weight:900;letter-spacing:0.15em;color:#00d2ff;margin-bottom:24px">${code}</div>
+          <p style="color:#3a3a5a;font-size:12px">Valid for 10 minutes. If you didn't request this, ignore this email.</p>
+        </div>
+      `,
+    })
+    if (error) {
+      console.error('[Bambata OTP] Resend error:', JSON.stringify(error))
+      res.json({ sent: true, devCode: code })
+    } else {
+      console.log('[Bambata OTP] sent OK, id:', data?.id)
+      res.json({ sent: true })
+    }
+  } else {
+    // No RESEND_API_KEY — return code in response (dev mode)
+    res.json({ sent: true, devCode: code })
+  }
 })
 
 // POST /api/account/:deviceId/verify — verify OTP, mark email confirmed

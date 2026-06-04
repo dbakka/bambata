@@ -191,13 +191,18 @@ export default function ClaimAccount({ nudgeLabel = 'Save your account →' }: P
         style={{ background: '#0f0f17', border: '1px solid #1e1e2e' }}
       >
         <div>
-          <p className="text-xs font-mono font-bold" style={{ color: '#e2e8f0' }}>CHECK YOUR EMAIL</p>
+          <p className="text-xs font-mono font-bold" style={{ color: '#e2e8f0' }}>VERIFY YOUR EMAIL</p>
           <p className="text-[11px] font-mono mt-1" style={{ color: '#475569' }}>
-            Code sent to {email}
-            {devCode && (
-              <span style={{ color: '#a78bfa' }}> (dev: {devCode})</span>
-            )}
+            {devCode ? 'Email not configured yet — use this code:' : `Code sent to ${email}`}
           </p>
+          {devCode && (
+            <div
+              className="mt-2 px-4 py-2.5 rounded-xl text-center text-xl font-mono tracking-[0.4em]"
+              style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)', color: '#a78bfa' }}
+            >
+              {devCode}
+            </div>
+          )}
         </div>
 
         <div>

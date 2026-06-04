@@ -10,6 +10,20 @@ import { getDeviceId } from '../../utils/deviceId'
 
 type Tab = 'setup' | 'live' | 'queue' | 'requests' | 'cast'
 
+interface HistoryParty {
+  id: string
+  name: string
+  date: string
+  venue: string
+  genre_mode: string
+  status: string
+  duration_min: number
+  started_at: number | null
+  created_at: number
+  pass_count: number
+  track_count: number
+}
+
 interface TokenRequest {
   id: string
   party_id: string
@@ -75,6 +89,7 @@ export default function Dashboard() {
   const [trackSearch, setTrackSearch] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
+  const [partyHistory, setPartyHistory] = useState<HistoryParty[]>([])
 
   const socket = useCreatorSocket(partyId ?? '', creatorToken)
 
@@ -109,6 +124,13 @@ export default function Dashboard() {
     if (res.ok) setRequests(await res.json() as TokenRequest[])
   }, [partyId, creatorToken])
 
+  const fetchHistory = useCallback(async () => {
+    const res = await fetch('/api/creator/parties', {
+      headers: { 'x-creator-token': creatorToken, 'x-device-id': deviceId },
+    })
+    if (res.ok) setPartyHistory(await res.json() as HistoryParty[])
+  }, [creatorToken, deviceId])
+
   useEffect(() => {
     if (!partyId || !creatorToken) {
       navigate('/')
@@ -117,7 +139,8 @@ export default function Dashboard() {
     fetchAll()
     fetchQueue()
     fetchRequests()
-  }, [partyId, creatorToken, fetchAll, fetchQueue, fetchRequests, navigate])
+    fetchHistory()
+  }, [partyId, creatorToken, fetchAll, fetchQueue, fetchRequests, fetchHistory, navigate])
 
   useEffect(() => {
     socket.on('swipe:update', (data: { trackId: string; swipeCount: number; totalSwipes: number }) => {
@@ -143,6 +166,17 @@ export default function Dashboard() {
       if (data.queue) setQueue(data.queue)
     })
 
+    socket.on('party:done', () => {
+      destroyEngine()
+      setParty((p) => p ? { ...p, status: 'done' } : p)
+      setTab('setup')
+      fetchHistory()
+    })
+
+    socket.on('party:extended', (data: { durationMin: number }) => {
+      setParty((p) => p ? { ...p, duration_min: data.durationMin } : p)
+    })
+
     socket.on('pass:count', (data: { total: number }) => {
       setTotalPasses(data.total)
     })
@@ -165,11 +199,13 @@ export default function Dashboard() {
       socket.off('swipe:opened')
       socket.off('swipe:closed')
       socket.off('party:status')
+      socket.off('party:done')
+      socket.off('party:extended')
       socket.off('pass:count')
       socket.off('request:new')
       socket.off('request:voted')
     }
-  }, [socket, fetchQueue])
+  }, [socket, fetchQueue, fetchHistory])
 
   useEffect(() => {
     if (trackSearch.length < 1) { setSearchResults([]); setSearching(false); return }
@@ -226,16 +262,16 @@ export default function Dashboard() {
     setTracks((prev) => prev.filter((t) => t.id !== trackId))
   }
 
-  const handleGenerateCodes = async (type: 'pass' | 'tokens') => {
+  const handleGenerateCodes = async (type: 'pass' | 'tokens' | 'extension') => {
     if (!partyId) return
+    const body =
+      type === 'pass' ? { type: 'pass', count: 10 }
+      : type === 'extension' ? { type: 'extension', count: 3, tokenAmount: 30 }
+      : { type: 'tokens', count: 5, tokenAmount: 20 }
     const res = await fetch(`/api/parties/${partyId}/codes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
-      body: JSON.stringify(
-        type === 'pass'
-          ? { type: 'pass', count: 10 }
-          : { type: 'tokens', count: 5, tokenAmount: 20 },
-      ),
+      body: JSON.stringify(body),
     })
     if (res.ok) {
       const newCodes = await res.json() as AccessCode[]
@@ -292,8 +328,7 @@ export default function Dashboard() {
       body: JSON.stringify({ status: 'mixing' }),
     })
     if (res.ok) {
-      const p = await res.json() as Party
-      setParty(p)
+      navigate(`/player/${partyId}`)
     }
   }
 
@@ -336,6 +371,7 @@ export default function Dashboard() {
   const shareUrl = partyId ? `${window.location.origin}/party/${partyId}` : ''
   const passCodes = codes.filter((c) => c.type === 'pass')
   const tokenCodes = codes.filter((c) => c.type === 'tokens')
+  const extensionCodes = codes.filter((c) => c.type === 'extension')
   const sortedBySwipes = [...tracks].sort((a, b) => b.swipe_count - a.swipe_count)
   const totalSwipes = liveSwipes?.totalSwipes ?? tracks.reduce((sum, t) => sum + t.swipe_count, 0)
 
@@ -397,13 +433,22 @@ export default function Dashboard() {
             <span style={{ color: '#a78bfa' }}>{totalSwipes} swipes</span>
           </div>
           {party.status === 'done' ? (
-            <button
-              onClick={() => navigate('/')}
-              className="text-[10px] font-mono px-2.5 py-1 rounded-lg"
-              style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', color: '#a78bfa' }}
-            >
-              ← HOME
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate('/')}
+                className="text-[10px] font-mono px-2.5 py-1 rounded-lg"
+                style={{ background: 'rgba(71,85,105,0.15)', border: '1px solid rgba(71,85,105,0.3)', color: '#475569' }}
+              >
+                ← HOME
+              </button>
+              <button
+                onClick={() => { destroyEngine(); navigate('/create') }}
+                className="text-[10px] font-mono px-2.5 py-1 rounded-lg font-bold"
+                style={{ background: 'rgba(0,210,255,0.12)', border: '1px solid rgba(0,210,255,0.35)', color: '#00d2ff' }}
+              >
+                + NEW PARTY
+              </button>
+            </div>
           ) : (
             <button
               onClick={() => setShowEndConfirm(true)}
@@ -466,198 +511,298 @@ export default function Dashboard() {
         {/* ── SETUP TAB ── */}
         {tab === 'setup' && (
           <div className="space-y-6">
-            {/* Track Library */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
-                  TRACK LIBRARY ({tracks.length})
-                </h2>
-                <button
-                  onClick={() => setShowAddTrack(true)}
-                  className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
-                  style={{
-                    background: 'rgba(0, 210, 255, 0.1)',
-                    border: '1px solid rgba(0, 210, 255, 0.3)',
-                    color: '#00d2ff',
-                  }}
-                >
-                  + ADD TRACK
-                </button>
-              </div>
-              <TrackLibrary tracks={tracks} onRemove={handleRemoveTrack} />
-            </div>
-
-            {/* Access Codes */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
-                  PASS CODES ({passCodes.filter((c) => c.redeemed_by_pass_id).length}/{passCodes.length} redeemed)
-                </h2>
-                <button
-                  onClick={() => handleGenerateCodes('pass')}
-                  className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
-                  style={{
-                    background: 'rgba(167, 139, 250, 0.1)',
-                    border: '1px solid rgba(167, 139, 250, 0.3)',
-                    color: '#a78bfa',
-                  }}
-                >
-                  GEN 10
-                </button>
-              </div>
-              {passCodes.length > 0 && (
-                <div
-                  className="rounded-xl overflow-hidden"
-                  style={{ border: '1px solid #1e1e2e' }}
-                >
-                  {passCodes.map((code) => (
-                    <div
-                      key={code.id}
-                      className="flex items-center justify-between px-3 py-2.5"
-                      style={{
-                        borderBottom: '1px solid #1e1e2e',
-                        background: code.redeemed_by_pass_id ? 'rgba(34, 197, 94, 0.03)' : 'transparent',
-                      }}
-                    >
-                      <span
-                        className="text-sm font-mono font-bold"
-                        style={{ color: code.redeemed_by_pass_id ? '#22c55e' : '#e2e8f0', opacity: code.redeemed_by_pass_id ? 0.6 : 1 }}
-                      >
-                        {code.code}
-                      </span>
-                      <button
-                        onClick={() => copyToClipboard(code.code, code.id)}
-                        className="text-[10px] font-mono px-2 py-1 rounded"
-                        style={{ color: copied === code.id ? '#22c55e' : '#475569' }}
-                      >
-                        {copied === code.id ? 'COPIED' : 'COPY'}
-                      </button>
-                    </div>
-                  ))}
+            {/* ── When party is done: show history overview ── */}
+            {party.status === 'done' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl text-center" style={{ background: 'rgba(71,85,105,0.08)', border: '1px solid #1e1e2e' }}>
+                  <div className="text-2xl font-black font-mono mb-1" style={{ color: '#475569' }}>PARTY ENDED</div>
+                  <div className="text-xs font-mono" style={{ color: '#3a3a5a' }}>{party.name} · {totalPasses} attendees · {tracks.length} tracks</div>
+                  <div className="flex gap-2 mt-3 justify-center">
+                    <button onClick={() => navigate('/')} className="text-xs font-mono px-3 py-1.5 rounded-lg" style={{ background: 'rgba(71,85,105,0.15)', border: '1px solid rgba(71,85,105,0.3)', color: '#475569' }}>← HOME</button>
+                    <button onClick={() => { destroyEngine(); navigate('/create') }} className="text-xs font-mono px-3 py-1.5 rounded-lg font-bold" style={{ background: 'rgba(0,210,255,0.12)', border: '1px solid rgba(0,210,255,0.35)', color: '#00d2ff' }}>+ NEW PARTY</button>
+                  </div>
                 </div>
-              )}
-            </div>
 
-            {/* Token Codes */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
-                  TOKEN BUNDLES ({tokenCodes.filter((c) => c.redeemed_by_pass_id).length}/{tokenCodes.length} redeemed)
-                </h2>
-                <button
-                  onClick={() => handleGenerateCodes('tokens')}
-                  className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
-                  style={{
-                    background: 'rgba(255, 107, 53, 0.1)',
-                    border: '1px solid rgba(255, 107, 53, 0.3)',
-                    color: '#ff6b35',
-                  }}
-                >
-                  GEN 5
-                </button>
-              </div>
-              {tokenCodes.length > 0 && (
-                <div
-                  className="rounded-xl overflow-hidden"
-                  style={{ border: '1px solid #1e1e2e' }}
-                >
-                  {tokenCodes.map((code) => (
-                    <div
-                      key={code.id}
-                      className="flex items-center justify-between px-3 py-2.5"
-                      style={{
-                        borderBottom: '1px solid #1e1e2e',
-                        background: code.redeemed_by_pass_id ? 'rgba(34, 197, 94, 0.03)' : 'transparent',
-                      }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span
-                          className="text-sm font-mono font-bold"
-                          style={{ color: code.redeemed_by_pass_id ? '#22c55e' : '#e2e8f0', opacity: code.redeemed_by_pass_id ? 0.6 : 1 }}
-                        >
-                          {code.code}
-                        </span>
-                        <span className="text-xs font-mono" style={{ color: '#ff6b35' }}>
-                          {code.token_amount}T
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => copyToClipboard(code.code, code.id)}
-                        className="text-[10px] font-mono px-2 py-1 rounded"
-                        style={{ color: copied === code.id ? '#22c55e' : '#475569' }}
-                      >
-                        {copied === code.id ? 'COPIED' : 'COPY'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Door Scanner link */}
-            <button
-              onClick={() => navigate(`/door/${partyId}`)}
-              className="w-full py-3 rounded-xl text-xs font-mono font-bold tracking-wider transition-all"
-              style={{
-                background: '#0f0f17',
-                border: '1px solid #1e1e2e',
-                color: '#475569',
-              }}
-            >
-              OPEN DOOR SCANNER
-            </button>
-
-            {/* Open Swipe Window */}
-            {party.status === 'pending' && (
-              <div>
-                {!showOpenConfirm ? (
-                  <button
-                    onClick={() => setShowOpenConfirm(true)}
-                    disabled={tracks.length < 3}
-                    className="w-full py-4 rounded-xl font-bold text-sm tracking-wider transition-all disabled:opacity-40"
-                    style={{
-                      background:
-                        tracks.length >= 3
-                          ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.2) 0%, rgba(34, 197, 94, 0.1) 100%)'
-                          : '#0f0f17',
-                      border: `1px solid ${tracks.length >= 3 ? 'rgba(34, 197, 94, 0.4)' : '#1e1e2e'}`,
-                      color: tracks.length >= 3 ? '#22c55e' : '#475569',
-                      fontFamily: 'JetBrains Mono, monospace',
-                    }}
-                  >
-                    {tracks.length < 3 ? `ADD ${3 - tracks.length} MORE TRACK${3 - tracks.length === 1 ? '' : 'S'}` : 'OPEN SWIPE WINDOW'}
-                  </button>
+                <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>PARTY HISTORY</h2>
+                {partyHistory.length === 0 ? (
+                  <div className="text-center py-6 text-xs font-mono" style={{ color: '#3a3a5a' }}>No parties yet.</div>
                 ) : (
-                  <div
-                    className="p-4 rounded-xl"
-                    style={{ background: 'rgba(34, 197, 94, 0.08)', border: '1px solid rgba(34, 197, 94, 0.3)' }}
-                  >
-                    <p className="text-sm text-center mb-4" style={{ color: '#e2e8f0' }}>
-                      Open a 5-minute swipe window for all {totalPasses} attendees?
-                    </p>
-                    <div className="flex gap-3">
-                      <button
-                        onClick={() => setShowOpenConfirm(false)}
-                        className="flex-1 py-3 rounded-xl text-xs font-mono"
-                        style={{ background: '#0f0f17', border: '1px solid #1e1e2e', color: '#475569' }}
-                      >
-                        CANCEL
-                      </button>
-                      <button
-                        onClick={handleOpenSwipeWindow}
-                        className="flex-1 py-3 rounded-xl text-sm font-bold font-mono"
-                        style={{
-                          background: 'rgba(34, 197, 94, 0.2)',
-                          border: '1px solid rgba(34, 197, 94, 0.5)',
-                          color: '#22c55e',
-                        }}
-                      >
-                        OPEN
-                      </button>
-                    </div>
+                  <div className="space-y-2">
+                    {partyHistory.map((p) => {
+                      const isCurrent = p.id === partyId
+                      const statusColor = p.status === 'mixing' ? '#00d2ff' : p.status === 'swipe_open' ? '#22c55e' : p.status === 'done' ? '#475569' : '#a78bfa'
+                      return (
+                        <div
+                          key={p.id}
+                          className="rounded-xl px-4 py-3"
+                          style={{
+                            background: isCurrent ? 'rgba(0,210,255,0.04)' : '#0f0f17',
+                            border: `1px solid ${isCurrent ? 'rgba(0,210,255,0.2)' : '#1e1e2e'}`,
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-bold font-mono truncate" style={{ color: isCurrent ? '#00d2ff' : '#e2e8f0' }}>
+                                  {p.name}
+                                </span>
+                                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(71,85,105,0.2)', color: statusColor }}>
+                                  {p.status.replace('_', ' ').toUpperCase()}
+                                </span>
+                                {isCurrent && <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(0,210,255,0.1)', color: '#00d2ff' }}>CURRENT</span>}
+                              </div>
+                              <div className="text-[11px] font-mono mt-0.5" style={{ color: '#3a3a5a' }}>{p.venue} · {p.date}</div>
+                              <div className="flex items-center gap-3 mt-1 text-[10px] font-mono" style={{ color: '#475569' }}>
+                                <span>{p.pass_count} attendees</span>
+                                <span>{p.track_count} tracks</span>
+                                <span>{p.genre_mode}</span>
+                              </div>
+                            </div>
+                            <div className="flex flex-col gap-1 flex-shrink-0">
+                              {p.status === 'mixing' && (
+                                <button
+                                  onClick={() => navigate(`/player/${p.id}`)}
+                                  className="text-[10px] font-mono px-2.5 py-1 rounded-lg font-bold"
+                                  style={{ background: 'rgba(0,210,255,0.15)', border: '1px solid rgba(0,210,255,0.4)', color: '#00d2ff' }}
+                                >
+                                  OPEN PLAYER
+                                </button>
+                              )}
+                              <button
+                                onClick={() => navigate(`/creator/${p.id}`)}
+                                className="text-[10px] font-mono px-2.5 py-1 rounded-lg"
+                                style={{ background: 'rgba(71,85,105,0.1)', border: '1px solid #1e1e2e', color: '#475569' }}
+                              >
+                                {isCurrent ? 'MANAGE' : 'VIEW'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ── When party is active: show setup controls ── */}
+            {party.status !== 'done' && (
+              <>
+                {/* Track Library */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
+                      TRACK LIBRARY ({tracks.length})
+                    </h2>
+                    <button
+                      onClick={() => setShowAddTrack(true)}
+                      className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
+                      style={{
+                        background: 'rgba(0, 210, 255, 0.1)',
+                        border: '1px solid rgba(0, 210, 255, 0.3)',
+                        color: '#00d2ff',
+                      }}
+                    >
+                      + ADD TRACK
+                    </button>
+                  </div>
+                  <TrackLibrary tracks={tracks} onRemove={handleRemoveTrack} />
+                </div>
+
+                {/* Access Codes */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
+                      PASS CODES ({passCodes.filter((c) => c.redeemed_by_pass_id).length}/{passCodes.length} redeemed)
+                    </h2>
+                    <button
+                      onClick={() => handleGenerateCodes('pass')}
+                      className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
+                      style={{
+                        background: 'rgba(167, 139, 250, 0.1)',
+                        border: '1px solid rgba(167, 139, 250, 0.3)',
+                        color: '#a78bfa',
+                      }}
+                    >
+                      GEN 10
+                    </button>
+                  </div>
+                  {passCodes.length > 0 && (
+                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #1e1e2e' }}>
+                      {passCodes.map((code) => (
+                        <div
+                          key={code.id}
+                          className="flex items-center justify-between px-3 py-2.5"
+                          style={{ borderBottom: '1px solid #1e1e2e', background: code.redeemed_by_pass_id ? 'rgba(34, 197, 94, 0.03)' : 'transparent' }}
+                        >
+                          <span className="text-sm font-mono font-bold" style={{ color: code.redeemed_by_pass_id ? '#22c55e' : '#e2e8f0', opacity: code.redeemed_by_pass_id ? 0.6 : 1 }}>
+                            {code.code}
+                          </span>
+                          <button onClick={() => copyToClipboard(code.code, code.id)} className="text-[10px] font-mono px-2 py-1 rounded" style={{ color: copied === code.id ? '#22c55e' : '#475569' }}>
+                            {copied === code.id ? 'COPIED' : 'COPY'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Token Codes */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
+                      TOKEN BUNDLES ({tokenCodes.filter((c) => c.redeemed_by_pass_id).length}/{tokenCodes.length} redeemed)
+                    </h2>
+                    <button
+                      onClick={() => handleGenerateCodes('tokens')}
+                      className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
+                      style={{
+                        background: 'rgba(255, 107, 53, 0.1)',
+                        border: '1px solid rgba(255, 107, 53, 0.3)',
+                        color: '#ff6b35',
+                      }}
+                    >
+                      GEN 5
+                    </button>
+                  </div>
+                  {tokenCodes.length > 0 && (
+                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #1e1e2e' }}>
+                      {tokenCodes.map((code) => (
+                        <div
+                          key={code.id}
+                          className="flex items-center justify-between px-3 py-2.5"
+                          style={{ borderBottom: '1px solid #1e1e2e', background: code.redeemed_by_pass_id ? 'rgba(34, 197, 94, 0.03)' : 'transparent' }}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-mono font-bold" style={{ color: code.redeemed_by_pass_id ? '#22c55e' : '#e2e8f0', opacity: code.redeemed_by_pass_id ? 0.6 : 1 }}>
+                              {code.code}
+                            </span>
+                            <span className="text-xs font-mono" style={{ color: '#ff6b35' }}>{code.token_amount}T</span>
+                          </div>
+                          <button onClick={() => copyToClipboard(code.code, code.id)} className="text-[10px] font-mono px-2 py-1 rounded" style={{ color: copied === code.id ? '#22c55e' : '#475569' }}>
+                            {copied === code.id ? 'COPIED' : 'COPY'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Extension Codes */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-xs font-mono font-bold tracking-wider" style={{ color: '#475569' }}>
+                      TIME EXTENSIONS ({extensionCodes.filter((c) => c.redeemed_by_pass_id).length}/{extensionCodes.length} used)
+                    </h2>
+                    <button
+                      onClick={() => handleGenerateCodes('extension')}
+                      className="text-xs font-mono px-3 py-1.5 rounded-lg transition-all"
+                      style={{
+                        background: 'rgba(0, 210, 255, 0.1)',
+                        border: '1px solid rgba(0, 210, 255, 0.3)',
+                        color: '#00d2ff',
+                      }}
+                    >
+                      GEN 3 (+30 MIN)
+                    </button>
+                  </div>
+                  {extensionCodes.length > 0 && (
+                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #1e1e2e' }}>
+                      {extensionCodes.map((code) => (
+                        <div
+                          key={code.id}
+                          className="flex items-center justify-between px-3 py-2.5"
+                          style={{ borderBottom: '1px solid #1e1e2e', background: code.redeemed_by_pass_id ? 'rgba(34,197,94,0.03)' : 'transparent' }}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-mono font-bold" style={{ color: code.redeemed_by_pass_id ? '#22c55e' : '#00d2ff', opacity: code.redeemed_by_pass_id ? 0.5 : 1 }}>
+                              {code.code}
+                            </span>
+                            <span className="text-xs font-mono" style={{ color: '#475569' }}>+{code.token_amount ?? 30} MIN</span>
+                          </div>
+                          <button onClick={() => copyToClipboard(code.code, code.id)} className="text-[10px] font-mono px-2 py-1 rounded" style={{ color: copied === code.id ? '#22c55e' : '#475569' }}>
+                            {copied === code.id ? 'COPIED' : 'COPY'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Door Scanner link */}
+                <button
+                  onClick={() => navigate(`/door/${partyId}`)}
+                  className="w-full py-3 rounded-xl text-xs font-mono font-bold tracking-wider transition-all"
+                  style={{ background: '#0f0f17', border: '1px solid #1e1e2e', color: '#475569' }}
+                >
+                  OPEN DOOR SCANNER
+                </button>
+
+                {/* Open Swipe Window */}
+                {party.status === 'pending' && (
+                  <div>
+                    {!showOpenConfirm ? (
+                      <button
+                        onClick={() => setShowOpenConfirm(true)}
+                        disabled={tracks.length < 3}
+                        className="w-full py-4 rounded-xl font-bold text-sm tracking-wider transition-all disabled:opacity-40"
+                        style={{
+                          background: tracks.length >= 3 ? 'linear-gradient(135deg, rgba(34, 197, 94, 0.2) 0%, rgba(34, 197, 94, 0.1) 100%)' : '#0f0f17',
+                          border: `1px solid ${tracks.length >= 3 ? 'rgba(34, 197, 94, 0.4)' : '#1e1e2e'}`,
+                          color: tracks.length >= 3 ? '#22c55e' : '#475569',
+                          fontFamily: 'JetBrains Mono, monospace',
+                        }}
+                      >
+                        {tracks.length < 3 ? `ADD ${3 - tracks.length} MORE TRACK${3 - tracks.length === 1 ? '' : 'S'}` : 'OPEN SWIPE WINDOW'}
+                      </button>
+                    ) : (
+                      <div className="p-4 rounded-xl" style={{ background: 'rgba(34, 197, 94, 0.08)', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
+                        <p className="text-sm text-center mb-4" style={{ color: '#e2e8f0' }}>
+                          Open a 5-minute swipe window for all {totalPasses} attendees?
+                        </p>
+                        <div className="flex gap-3">
+                          <button onClick={() => setShowOpenConfirm(false)} className="flex-1 py-3 rounded-xl text-xs font-mono" style={{ background: '#0f0f17', border: '1px solid #1e1e2e', color: '#475569' }}>
+                            CANCEL
+                          </button>
+                          <button onClick={handleOpenSwipeWindow} className="flex-1 py-3 rounded-xl text-sm font-bold font-mono" style={{ background: 'rgba(34, 197, 94, 0.2)', border: '1px solid rgba(34, 197, 94, 0.5)', color: '#22c55e' }}>
+                            OPEN
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* History at the bottom — quick glance at other parties */}
+                {partyHistory.filter((p) => p.id !== partyId).length > 0 && (
+                  <div>
+                    <h2 className="text-xs font-mono font-bold tracking-wider mb-3" style={{ color: '#475569' }}>PARTY HISTORY</h2>
+                    <div className="space-y-2">
+                      {partyHistory.filter((p) => p.id !== partyId).map((p) => {
+                        const statusColor = p.status === 'mixing' ? '#00d2ff' : p.status === 'done' ? '#475569' : '#22c55e'
+                        return (
+                          <div key={p.id} className="flex items-center justify-between px-4 py-3 rounded-xl" style={{ background: '#0f0f17', border: '1px solid #1e1e2e' }}>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-mono font-bold" style={{ color: '#e2e8f0' }}>{p.name}</span>
+                                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(71,85,105,0.2)', color: statusColor }}>{p.status.replace('_',' ').toUpperCase()}</span>
+                              </div>
+                              <div className="text-[10px] font-mono mt-0.5" style={{ color: '#3a3a5a' }}>{p.date} · {p.pass_count} attendees</div>
+                            </div>
+                            <button
+                              onClick={() => navigate(`/creator/${p.id}`)}
+                              className="text-[10px] font-mono px-2.5 py-1 rounded-lg"
+                              style={{ background: 'rgba(71,85,105,0.1)', border: '1px solid #1e1e2e', color: '#475569' }}
+                            >
+                              {p.status === 'mixing' ? 'EXTEND' : 'VIEW'}
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

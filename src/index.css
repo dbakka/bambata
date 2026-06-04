@@ -68,11 +68,26 @@ input[type='range'][style*='vertical-lr']::-webkit-slider-runnable-track {
   100% { opacity: 0; transform: translateY(-120px) scale(1.4); }
 }
 
+@keyframes floatDown {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  80%  { opacity: 0.7; }
+  100% { opacity: 0; transform: translateY(80px) scale(0.7); }
+}
+
 .react-float {
   position: fixed;
   pointer-events: none;
   font-size: 1.75rem;
   animation: floatUp 1.2s ease-out forwards;
+  z-index: 9999;
+  user-select: none;
+}
+
+.react-float-down {
+  position: fixed;
+  pointer-events: none;
+  font-size: 1.5rem;
+  animation: floatDown 1s ease-in forwards;
   z-index: 9999;
   user-select: none;
 }

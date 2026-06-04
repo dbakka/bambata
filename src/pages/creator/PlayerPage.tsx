@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { type MixingEngine, type MixTrack, type MixProgress, type MixState } from '../../modules/mixing/MixingEngine'
-import { getOrCreateEngine } from '../../modules/mixing/engineSingleton'
+import { getOrCreateEngine, destroyEngine } from '../../modules/mixing/engineSingleton'
 import { useCreatorSocket } from '../../hooks/useSocket'
 import { CountdownTimer } from '../../components/CountdownTimer'
 import type { Party } from '../../types/party'
@@ -38,6 +38,10 @@ export default function PlayerPage() {
   const [durationMin, setDurationMin] = useState(120)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [prepStep, setPrepStep] = useState(-1) // -1 = not started, 0-3 = animating, 4 = done
+  const [timeUp, setTimeUp] = useState(false)
+  const [extCode, setExtCode] = useState('')
+  const [extMsg, setExtMsg] = useState('')
+  const [extending, setExtending] = useState(false)
   const hasEmittedStart = useRef(false)
 
   const socket = useCreatorSocket(partyId ?? '', creatorToken)
@@ -88,7 +92,25 @@ export default function PlayerPage() {
         return updated
       })
     })
-    return () => { socket.off('queue:updated') }
+
+    socket.on('party:done', () => {
+      destroyEngine()
+      engineRef.current = null
+      setTimeUp(true)
+    })
+
+    socket.on('party:extended', (data: { durationMin: number }) => {
+      setDurationMin(data.durationMin)
+      setTimeUp(false)
+      setExtMsg('')
+      setExtCode('')
+    })
+
+    return () => {
+      socket.off('queue:updated')
+      socket.off('party:done')
+      socket.off('party:extended')
+    }
   }, [socket])
 
   // Attach to singleton engine — survives navigation to/from Dashboard
@@ -283,6 +305,23 @@ export default function PlayerPage() {
     }
   }
 
+  const handleExtend = async () => {
+    if (!extCode.trim() || !partyId) return
+    setExtending(true)
+    setExtMsg('')
+    try {
+      const res = await fetch(`/api/parties/${partyId}/extend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+        body: JSON.stringify({ code: extCode.trim() }),
+      })
+      const d = await res.json() as { extraMin?: number; error?: string }
+      if (!res.ok) { setExtMsg(d.error ?? 'Invalid code'); return }
+      setExtMsg(`✓ +${d.extraMin} minutes added!`)
+    } catch { setExtMsg('Something went wrong') }
+    finally { setExtending(false) }
+  }
+
   const pct = progress.duration > 0 ? (progress.currentTime / progress.duration) * 100 : 0
   const bufferedPct = progress.duration > 0 ? (progress.buffered / progress.duration) * 100 : 0
   const isPlaying = engineState === 'playing' || engineState === 'crossfading'
@@ -458,6 +497,7 @@ export default function PlayerPage() {
             endsAt={startedAt + durationMin * 60 * 1000}
             showLabel
             className="text-xs"
+            onExpire={() => { destroyEngine(); engineRef.current = null; setTimeUp(true) }}
           />
         </div>
       )}
@@ -708,6 +748,74 @@ export default function PlayerPage() {
           })}
         </div>
       </div>
+
+      {/* Time's Up overlay — blocks playback, prompts extension */}
+      {timeUp && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center"
+          style={{ background: 'rgba(5,5,8,0.97)' }}
+        >
+          <div className="text-5xl mb-5">⏱</div>
+          <h2
+            className="text-3xl font-black tracking-wider mb-2"
+            style={{ color: '#e2e8f0', fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            TIME'S UP
+          </h2>
+          <p className="text-sm mb-2" style={{ color: '#475569' }}>
+            The mix has ended. Enter an extension code to keep going.
+          </p>
+          <p className="text-xs font-mono mb-8" style={{ color: '#3a3a5a' }}>
+            Generate extension codes from the CODES tab on your dashboard.
+          </p>
+
+          <div className="w-full max-w-xs flex flex-col gap-3">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={extCode}
+                onChange={e => setExtCode(e.target.value.toUpperCase())}
+                placeholder="EXTENSION CODE (E-XXXXXX)"
+                className="flex-1 px-4 py-3 rounded-xl text-sm font-mono outline-none tracking-widest"
+                style={{ background: '#0f0f17', border: '1px solid #2a2a3a', color: '#e2e8f0' }}
+              />
+              <button
+                onClick={handleExtend}
+                disabled={extending || !extCode.trim()}
+                className="px-4 py-3 rounded-xl text-sm font-mono font-bold disabled:opacity-40"
+                style={{ background: 'rgba(0,210,255,0.15)', border: '1px solid rgba(0,210,255,0.4)', color: '#00d2ff' }}
+              >
+                {extending ? '…' : 'APPLY'}
+              </button>
+            </div>
+            {extMsg && (
+              <p className="text-xs font-mono text-center" style={{ color: extMsg.startsWith('✓') ? '#22c55e' : '#ef4444' }}>
+                {extMsg}
+              </p>
+            )}
+
+            <div
+              className="mt-2 px-4 py-3 rounded-xl text-left"
+              style={{ background: '#0a0a0f', border: '1px solid #1e1e2e' }}
+            >
+              <p className="text-[10px] font-mono mb-1" style={{ color: '#a78bfa' }}>HOW TO GET MORE TIME</p>
+              <p className="text-[10px] font-mono leading-relaxed" style={{ color: '#3a3a5a' }}>
+                1. Go to Dashboard → Codes tab<br />
+                2. Tap GEN 3 (+30 MIN) under TIME EXTENSIONS<br />
+                3. Enter any of the generated codes above
+              </p>
+            </div>
+
+            <button
+              onClick={() => { destroyEngine(); engineRef.current = null; navigate('/') }}
+              className="mt-2 text-xs font-mono py-2"
+              style={{ color: '#2a2a4a' }}
+            >
+              ← END PARTY &amp; GO HOME
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

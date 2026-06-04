@@ -46,7 +46,7 @@ export default function Home() {
           .catch(() => null)
       )
     ).then(results => {
-      setHistory(results.filter((r): r is PartyCard => r !== null))
+      setHistory(results.filter((r): r is PartyCard => r !== null && r.status !== 'done'))
     })
   }, [])
 
