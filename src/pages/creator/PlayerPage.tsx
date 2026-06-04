@@ -37,6 +37,7 @@ export default function PlayerPage() {
   const [cachedCount, setCachedCount] = useState(0)
   const [durationMin, setDurationMin] = useState(120)
   const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [prepStep, setPrepStep] = useState(-1) // -1 = not started, 0-3 = animating, 4 = done
   const hasEmittedStart = useRef(false)
 
   const socket = useCreatorSocket(partyId ?? '', creatorToken)
@@ -244,12 +245,24 @@ export default function PlayerPage() {
     return () => cancelAnimationFrame(animRef.current)
   }, [engineState, animate])
 
+  const PREP_STEPS = [
+    'Reading crowd votes…',
+    'Building energy arc…',
+    'Syncing BPM transitions…',
+    'Loading first tracks…',
+  ]
+
   const handleStart = async () => {
     setError('')
-    try {
-      await engineRef.current?.start()
-    } catch (err) {
+    setPrepStep(0)
+    // Animate through steps while engine preps in parallel
+    engineRef.current?.start().catch(err => {
       setError(err instanceof Error ? err.message : 'Failed to start')
+      setPrepStep(-1)
+    })
+    for (let i = 0; i < PREP_STEPS.length; i++) {
+      await new Promise(r => setTimeout(r, i === PREP_STEPS.length - 1 ? 1200 : 900))
+      setPrepStep(i + 1)
     }
   }
 
@@ -279,6 +292,72 @@ export default function PlayerPage() {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#050508' }}>
         <span className="text-xs font-mono animate-pulse" style={{ color: '#475569' }}>LOADING QUEUE…</span>
+      </div>
+    )
+  }
+
+  // Preparation overlay — shown between pressing START and mix actually playing
+  if (prepStep >= 0 && prepStep < PREP_STEPS.length) {
+    return (
+      <div
+        className="min-h-screen flex flex-col items-center justify-center px-6 gap-8"
+        style={{ background: '#050508' }}
+      >
+        {/* Pulsing brain icon */}
+        <div className="relative flex items-center justify-center">
+          <div className="absolute w-24 h-24 rounded-full" style={{ background: 'rgba(0,210,255,0.06)', animation: 'ping 1.5s ease-in-out infinite' }} />
+          <div className="absolute w-16 h-16 rounded-full" style={{ background: 'rgba(0,210,255,0.1)', animation: 'pulse 1s ease-in-out infinite' }} />
+          <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: 'rgba(0,210,255,0.15)', border: '1px solid rgba(0,210,255,0.35)' }}>
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" style={{ color: '#00d2ff' }}>
+              <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+            </svg>
+          </div>
+        </div>
+
+        <div className="text-center">
+          <p className="text-[10px] font-mono tracking-[0.3em] mb-2" style={{ color: '#3a3a5a' }}>BAMBATA</p>
+          <h2 className="text-xl font-black tracking-wider mb-1" style={{ color: '#e2e8f0', fontFamily: 'JetBrains Mono, monospace' }}>
+            PREPARING MIX
+          </h2>
+          <p className="text-xs font-mono" style={{ color: '#475569' }}>{queue.length} tracks · {durationMin} min session</p>
+        </div>
+
+        {/* Step list */}
+        <div className="w-full max-w-xs flex flex-col gap-3">
+          {PREP_STEPS.map((step, i) => {
+            const done = i < prepStep
+            const active = i === prepStep
+            return (
+              <div key={i} className="flex items-center gap-3">
+                <div
+                  className="w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center"
+                  style={{
+                    background: done ? 'rgba(34,197,94,0.15)' : active ? 'rgba(0,210,255,0.15)' : 'rgba(255,255,255,0.03)',
+                    border: done ? '1px solid rgba(34,197,94,0.4)' : active ? '1px solid rgba(0,210,255,0.4)' : '1px solid #1e1e2e',
+                    transition: 'all 0.4s ease',
+                  }}
+                >
+                  {done ? (
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#22c55e' }}>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : active ? (
+                    <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: '#00d2ff' }} />
+                  ) : null}
+                </div>
+                <span
+                  className="text-xs font-mono"
+                  style={{
+                    color: done ? '#22c55e' : active ? '#e2e8f0' : '#2a2a4a',
+                    transition: 'color 0.4s ease',
+                  }}
+                >
+                  {step}
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </div>
     )
   }
