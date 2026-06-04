@@ -584,9 +584,10 @@ app.post('/api/parties/:id/tracks', (req, res) => {
       { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) },
     )
       .then(r => r.ok ? r.json() : null)
-      .then((data: { results?: Array<{ previewUrl?: string; trackName?: string; artistName?: string }> } | null) => {
-        if (!data?.results) return
-        const match = data.results.find((r) => r.previewUrl)
+      .then((data) => {
+        const d = data as { results?: Array<{ previewUrl?: string; trackName?: string; artistName?: string }> } | null
+        if (!d?.results) return
+        const match = d.results.find((r) => r.previewUrl)
         if (match?.previewUrl) {
           db.prepare('UPDATE tracks SET audiomack_url = ? WHERE id = ?').run(match.previewUrl, trackId)
         }
@@ -970,7 +971,7 @@ const GENRE_BPM: Record<string, [number, number]> = {
 }
 
 function estimateEnergy(genre?: string, durationMs?: number): number {
-  const base = (genre && GENRE_ENERGY[genre]) ?? 5.5
+  const base = genre ? (GENRE_ENERGY[genre] ?? 5.5) : 5.5
   // Small jitter so tracks in the same genre land at different energy levels
   const jitter = (Math.random() - 0.5) * 1.2
   // Club edits / intros (< 2:30) tend to be punchier
