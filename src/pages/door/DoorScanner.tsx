@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import jsQR from 'jsqr'
+import { getDeviceId } from '../../utils/deviceId'
 
 interface ScanResult {
   passId: string
@@ -94,7 +95,7 @@ export default function DoorScanner() {
       try {
         const res = await fetch(`/api/passes/${passId}/scan`, {
           method: 'POST',
-          headers: { 'x-creator-token': creatorToken },
+          headers: { 'x-creator-token': creatorToken, 'x-device-id': getDeviceId() },
         })
         const responseData = (await res.json()) as {
           attendee_name?: string

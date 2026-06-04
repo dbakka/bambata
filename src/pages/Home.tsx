@@ -60,7 +60,7 @@ export default function Home() {
     if (card.role === 'creator') {
       navigate(`/creator/${card.id}`)
     } else {
-      if (card.status === 'active') navigate(`/party/${card.id}/now`)
+      if (card.status === 'mixing') navigate(`/party/${card.id}/now`)
       else if (card.status === 'swipe_open') navigate(`/party/${card.id}/swipe`)
       else if (card.status === 'done') navigate(`/party/${card.id}/closed`)
       else navigate(`/party/${card.id}/pass`)
@@ -68,7 +68,7 @@ export default function Home() {
   }
 
   const statusLabel = (status: string) => {
-    if (status === 'active') return { text: 'LIVE', color: '#22c55e' }
+    if (status === 'mixing') return { text: 'LIVE', color: '#22c55e' }
     if (status === 'swipe_open') return { text: 'VOTING', color: '#a78bfa' }
     if (status === 'done') return { text: 'ENDED', color: '#3a3a5a' }
     return { text: 'UPCOMING', color: '#475569' }

@@ -67,7 +67,13 @@ export default function SwipeWindow() {
     socket.on('swipe:closed', () => navigate(`/party/${partyId}/closed`))
     socket.on('party:done', () => navigate(`/party/${partyId}/closed`))
     socket.on('party:status', (data: { status: Party['status'] }) => {
-      if (data.status !== 'swipe_open') navigate(`/party/${partyId}/closed`)
+      if (data.status === 'mixing') navigate(`/party/${partyId}/now`)
+      else if (data.status !== 'swipe_open') navigate(`/party/${partyId}/closed`)
+    })
+    // Mix has started — go straight to the live room
+    socket.on('player:started', () => navigate(`/party/${partyId}/now`))
+    socket.on('player:track', (data: { current: unknown }) => {
+      if (data.current) navigate(`/party/${partyId}/now`)
     })
     socket.on('track:added', (data: { track: Track }) => {
       setTracks((prev) => {
@@ -82,6 +88,8 @@ export default function SwipeWindow() {
       socket.off('swipe:closed')
       socket.off('party:done')
       socket.off('party:status')
+      socket.off('player:started')
+      socket.off('player:track')
       socket.off('track:added')
       socket.off('tracks:seeded')
     }
@@ -160,10 +168,10 @@ export default function SwipeWindow() {
     )
   }
 
-  // Deck is empty (swiped everything)
+  // Deck is empty (swiped everything) — show brief confirmation then go to live room
   if (tracks.length > 0 && unanswered.length === 0 && !showSuggest) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center px-4 text-center" style={{ background: '#050508' }}>
+      <div className="min-h-screen flex flex-col items-center justify-center px-4 text-center safe-top safe-bottom" style={{ background: '#050508' }}>
         {party?.name && (
           <p className="text-[10px] font-mono tracking-widest mb-6" style={{ color: '#3a3a5a' }}>
             {party.name.toUpperCase()}
@@ -187,12 +195,22 @@ export default function SwipeWindow() {
           <p className="text-xs font-mono" style={{ color: '#475569' }}>
             {swipedCount} tracks rated
           </p>
+
+          {/* Go to the live room */}
+          <button
+            onClick={() => navigate(`/party/${partyId}/now`)}
+            className="w-full py-4 rounded-xl font-bold text-sm tracking-wider"
+            style={{ background: 'rgba(0,210,255,0.12)', border: '1px solid rgba(0,210,255,0.35)', color: '#00d2ff', fontFamily: 'JetBrains Mono, monospace' }}
+          >
+            ENTER THE MIX →
+          </button>
+
           <button
             onClick={() => { setSuggestSearch(''); setShowSuggest(true); setTimeout(() => searchRef.current?.focus(), 100) }}
             className="text-sm font-mono px-5 py-2.5 rounded-xl"
-            style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)', color: '#a78bfa' }}
+            style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.2)', color: '#a78bfa' }}
           >
-            + Suggest a track
+            + Suggest a track first
           </button>
         </div>
       </div>

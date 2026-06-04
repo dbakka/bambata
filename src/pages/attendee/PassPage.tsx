@@ -46,22 +46,27 @@ export default function PassPage() {
     socket.on('swipe:opened', () => navigate(`/party/${partyId}/swipe`))
     socket.on('party:status', (data: { status: Party['status'] }) => {
       if (data.status === 'swipe_open') navigate(`/party/${partyId}/swipe`)
+      if (data.status === 'mixing') navigate(`/party/${partyId}/now`)
+    })
+    socket.on('player:started', () => navigate(`/party/${partyId}/now`))
+    socket.on('player:track', (data: { current: unknown }) => {
+      if (data.current) navigate(`/party/${partyId}/now`)
     })
     socket.on('party:done', () => navigate(`/party/${partyId}/closed`))
     return () => {
       socket.off('swipe:opened')
       socket.off('party:status')
+      socket.off('player:started')
+      socket.off('player:track')
       socket.off('party:done')
     }
   }, [socket, partyId, navigate])
 
   const handleEnter = () => {
     if (!partyId || !party) return
-    if (party.status === 'swipe_open') {
-      navigate(`/party/${partyId}/swipe`)
-    } else {
-      navigate(`/party/${partyId}/lobby`)
-    }
+    if (party.status === 'swipe_open') navigate(`/party/${partyId}/swipe`)
+    else if (party.status === 'mixing') navigate(`/party/${partyId}/now`)
+    else navigate(`/party/${partyId}/lobby`)
   }
 
   if (!pass) {
@@ -144,7 +149,7 @@ export default function PassPage() {
             fontFamily: 'JetBrains Mono, monospace',
           }}
         >
-          I'M IN
+          {party?.status === 'mixing' ? 'JOIN THE MIX →' : party?.status === 'swipe_open' ? 'JOIN & VOTE NOW' : "I'M IN"}
         </button>
 
         <ClaimAccount nudgeLabel="Get your receipt by email →" />
