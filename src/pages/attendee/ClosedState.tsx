@@ -189,18 +189,25 @@ export default function ClosedState() {
 
   return (
     <div
-      className="min-h-screen flex flex-col items-center px-4 py-8"
+      className="min-h-screen flex flex-col items-center px-4 py-8 safe-top safe-bottom"
       style={{ background: '#050508' }}
     >
       <div className="w-full max-w-sm flex flex-col gap-6">
         {/* Header */}
-        <div className="text-center pt-4">
+        <div className="flex items-center justify-between pt-4">
           <span
             className="text-lg font-black tracking-widest"
             style={{ color: '#00d2ff', fontFamily: 'JetBrains Mono, monospace' }}
           >
             BAMBATA
           </span>
+          <button
+            onClick={() => navigate('/')}
+            className="text-xs font-mono px-3 py-1.5 rounded-xl"
+            style={{ background: '#0f0f17', border: '1px solid #1e1e2e', color: '#475569' }}
+          >
+            ← HOME
+          </button>
         </div>
 
         {/* Status */}
@@ -474,6 +481,14 @@ export default function ClosedState() {
             </div>
           </div>
         )}
+        {/* Exit */}
+        <button
+          onClick={() => navigate('/')}
+          className="w-full py-3 rounded-xl text-sm font-mono tracking-wider"
+          style={{ background: '#0a0a0f', border: '1px solid #1e1e2e', color: '#3a3a5a' }}
+        >
+          DONE · GO HOME
+        </button>
       </div>
     </div>
   )

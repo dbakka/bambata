@@ -394,7 +394,15 @@ export default function Dashboard() {
             <span>{totalPasses} in</span>
             <span style={{ color: '#a78bfa' }}>{totalSwipes} swipes</span>
           </div>
-          {party.status !== 'done' && (
+          {party.status === 'done' ? (
+            <button
+              onClick={() => navigate('/')}
+              className="text-[10px] font-mono px-2.5 py-1 rounded-lg"
+              style={{ background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', color: '#a78bfa' }}
+            >
+              ← HOME
+            </button>
+          ) : (
             <button
               onClick={() => setShowEndConfirm(true)}
               className="text-[10px] font-mono px-2.5 py-1 rounded-lg"

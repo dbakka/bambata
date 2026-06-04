@@ -234,8 +234,15 @@ export default function DoorScanner() {
             </div>
           )}
         </div>
-        <button onClick={() => navigate(`/creator/${partyId}`)} className="text-xs font-mono" style={{ color: '#475569' }}>
-          DASHBOARD
+        <button
+          onClick={() => navigate(`/creator/${partyId}`)}
+          className="text-xs font-mono flex items-center gap-1.5 px-3 py-1.5 rounded-xl"
+          style={{ background: '#0f0f17', border: '1px solid #1e1e2e', color: '#475569' }}
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          BACK
         </button>
       </div>
 
