@@ -6,6 +6,7 @@ import type { MixTrack } from '../../modules/mixing/MixingEngine'
 
 interface Particle { id: number; x: number; y: number; emoji: string }
 interface StoredPass { id: string; attendee_name: string }
+interface SearchResult { title: string; artist: string; previewUrl: string }
 
 const REACTION_EMOJIS = ['🔥', '🔥', '🔥', '💥', '🎵', '⚡']
 let particleId = 0
@@ -22,12 +23,32 @@ export default function NowPlaying() {
   const [timeUp, setTimeUp] = useState(false)
   const lastReactAt = useRef(0)
 
+  // Token + request states
+  const [tokenBalance, setTokenBalance] = useState(0)
+  const [showRequest, setShowRequest] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const [selectedTrack, setSelectedTrack] = useState<SearchResult | null>(null)
+  const [tokensToSpend, setTokensToSpend] = useState(1)
+  const [submitting, setSubmitting] = useState(false)
+  const [requestMsg, setRequestMsg] = useState('')
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const socket = usePartySocket(partyId ?? '')
 
   const pass: StoredPass | null = (() => {
     try { return partyId ? JSON.parse(localStorage.getItem(`bambata_pass_${partyId}`) ?? 'null') : null }
     catch { return null }
   })()
+
+  const fetchWallet = useCallback(() => {
+    if (!partyId || !pass?.id) return
+    fetch(`/api/parties/${partyId}/wallet/${pass.id}`)
+      .then(r => r.ok ? r.json() as Promise<{ balance: number }> : Promise.reject())
+      .then(d => setTokenBalance(d.balance))
+      .catch(() => {})
+  }, [partyId, pass?.id])
 
   // Fetch initial state
   useEffect(() => {
@@ -48,6 +69,8 @@ export default function NowPlaying() {
       .catch(() => {})
   }, [partyId])
 
+  useEffect(() => { fetchWallet() }, [fetchWallet])
+
   useEffect(() => {
     socket.on('player:track', (data: { current: MixTrack | null }) => {
       setCurrent(data.current)
@@ -58,17 +81,20 @@ export default function NowPlaying() {
     socket.on('track:reacted', (data: { trackId: string; count: number }) => {
       if (current?.id === data.trackId) setReactionCount(data.count)
     })
+    socket.on('wallet:updated', (data: { passId: string; balance: number }) => {
+      if (data.passId === pass?.id) setTokenBalance(data.balance)
+    })
     socket.on('party:done', () => navigate(`/party/${partyId}/closed`))
     return () => {
       socket.off('player:track'); socket.off('player:state'); socket.off('player:started')
-      socket.off('track:reacted'); socket.off('party:done')
+      socket.off('track:reacted'); socket.off('wallet:updated'); socket.off('party:done')
     }
-  }, [socket, partyId, navigate, current?.id])
+  }, [socket, partyId, navigate, current?.id, pass?.id])
 
   const handleTap = useCallback((e: React.PointerEvent) => {
-    if (!playing || !current) return
+    if (!playing || !current || showRequest) return
     const now = Date.now()
-    if (now - lastReactAt.current < 1200) return  // rate limit: 1 per 1.2s
+    if (now - lastReactAt.current < 1200) return
     lastReactAt.current = now
 
     const emoji = REACTION_EMOJIS[Math.floor(Math.random() * REACTION_EMOJIS.length)]
@@ -85,7 +111,57 @@ export default function NowPlaying() {
       passId: pass?.id,
       attendeeName: pass?.attendee_name,
     })
-  }, [playing, current, socket, partyId, pass])
+  }, [playing, current, socket, partyId, pass, showRequest])
+
+  const handleSearch = (q: string) => {
+    setSearchQuery(q)
+    setSelectedTrack(null)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    if (!q.trim()) { setSearchResults([]); return }
+    searchTimer.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const res = await fetch(`/api/parties/${partyId}/search?q=${encodeURIComponent(q)}`)
+        const data = await res.json() as SearchResult[]
+        setSearchResults(data)
+      } catch { setSearchResults([]) }
+      finally { setSearching(false) }
+    }, 500)
+  }
+
+  const handleSubmitRequest = async () => {
+    if (!selectedTrack || !pass?.id) return
+    setSubmitting(true)
+    setRequestMsg('')
+    try {
+      const res = await fetch(`/api/parties/${partyId}/requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          passId: pass.id,
+          trackTitle: selectedTrack.title,
+          trackArtist: selectedTrack.artist,
+          tokensSpent: tokensToSpend,
+        }),
+      })
+      if (!res.ok) {
+        const d = await res.json() as { error: string }
+        setRequestMsg(d.error ?? 'Failed to submit')
+        return
+      }
+      fetchWallet()
+      setRequestMsg('Request sent!')
+      setTimeout(() => {
+        setShowRequest(false)
+        setSearchQuery('')
+        setSearchResults([])
+        setSelectedTrack(null)
+        setTokensToSpend(1)
+        setRequestMsg('')
+      }, 1500)
+    } catch { setRequestMsg('Something went wrong') }
+    finally { setSubmitting(false) }
+  }
 
   const endsAt = startedAt && durationMin ? startedAt + durationMin * 60 * 1000 : null
   const elapsed = startedAt ? Date.now() - startedAt : 0
@@ -121,6 +197,11 @@ export default function NowPlaying() {
           {reactionCount > 0 && (
             <span className="text-xs font-mono" style={{ color: '#ff6b35' }}>
               🔥 {reactionCount}
+            </span>
+          )}
+          {tokenBalance > 0 && (
+            <span className="text-xs font-mono" style={{ color: '#a78bfa' }}>
+              ◈ {tokenBalance}
             </span>
           )}
           {endsAt && (
@@ -178,14 +259,28 @@ export default function NowPlaying() {
               ))}
             </div>
 
-            {/* Tap hint */}
+            {/* Action buttons */}
             {playing && (
-              <div className="flex flex-col items-center gap-2">
-                <div
-                  className="px-5 py-2.5 rounded-full text-xs font-mono tracking-widest"
-                  style={{ background: 'rgba(255,107,53,0.12)', border: '1px solid rgba(255,107,53,0.25)', color: '#ff6b35' }}
-                >
-                  TAP TO REACT 🔥
+              <div className="flex flex-col items-center gap-3 w-full max-w-xs">
+                <div className="flex gap-3 w-full">
+                  {/* Tap to react */}
+                  <div
+                    className="flex-1 px-4 py-3 rounded-full text-xs font-mono tracking-widest text-center"
+                    style={{ background: 'rgba(255,107,53,0.12)', border: '1px solid rgba(255,107,53,0.25)', color: '#ff6b35' }}
+                  >
+                    TAP TO REACT 🔥
+                  </div>
+
+                  {/* Request track */}
+                  {pass?.id && (
+                    <button
+                      onPointerDown={e => { e.stopPropagation(); setShowRequest(true) }}
+                      className="px-4 py-3 rounded-full text-xs font-mono tracking-widest"
+                      style={{ background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', color: '#a78bfa' }}
+                    >
+                      + REQUEST
+                    </button>
+                  )}
                 </div>
                 <p className="text-[10px] font-mono" style={{ color: '#3a3a5a' }}>
                   tap anywhere on screen
@@ -208,7 +303,7 @@ export default function NowPlaying() {
         )}
       </div>
 
-      {/* Time-up overlay — prompt to extend */}
+      {/* Time-up overlay */}
       {timeUp && (
         <div
           className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center"
@@ -241,6 +336,123 @@ export default function NowPlaying() {
           <p className="text-[10px] font-mono mt-6" style={{ color: '#3a3a5a' }}>
             Payments launching soon
           </p>
+        </div>
+      )}
+
+      {/* Request modal */}
+      {showRequest && (
+        <div
+          className="fixed inset-0 z-40 flex flex-col"
+          style={{ background: 'rgba(5,5,8,0.97)' }}
+          onPointerDown={e => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 pt-6 pb-4 safe-top flex-shrink-0">
+            <p className="text-xs font-mono font-bold tracking-widest" style={{ color: '#e2e8f0' }}>REQUEST A TRACK</p>
+            <button
+              onPointerDown={() => { setShowRequest(false); setSearchQuery(''); setSearchResults([]); setSelectedTrack(null); setRequestMsg('') }}
+              className="text-xs font-mono"
+              style={{ color: '#475569' }}
+            >
+              ✕ CLOSE
+            </button>
+          </div>
+
+          {/* Token balance strip */}
+          <div className="mx-5 mb-4 px-4 py-2.5 rounded-xl flex items-center justify-between flex-shrink-0"
+            style={{ background: '#0f0f17', border: '1px solid #1e1e2e' }}>
+            <span className="text-[10px] font-mono" style={{ color: '#475569' }}>YOUR TOKENS</span>
+            <span className="text-sm font-mono font-bold" style={{ color: '#a78bfa' }}>◈ {tokenBalance}</span>
+          </div>
+
+          {/* Search */}
+          <div className="px-5 mb-4 flex-shrink-0">
+            <input
+              autoFocus
+              type="text"
+              value={searchQuery}
+              onChange={e => handleSearch(e.target.value)}
+              placeholder="Search by song or artist…"
+              className="w-full px-4 py-3 rounded-xl text-sm outline-none font-mono"
+              style={{ background: '#0f0f17', border: '1px solid #1e1e2e', color: '#e2e8f0' }}
+            />
+          </div>
+
+          {/* Results */}
+          <div className="flex-1 overflow-y-auto px-5 pb-4">
+            {searching && (
+              <p className="text-xs font-mono text-center py-8 animate-pulse" style={{ color: '#475569' }}>SEARCHING…</p>
+            )}
+            {!searching && searchResults.length === 0 && searchQuery.trim() && (
+              <p className="text-xs font-mono text-center py-8" style={{ color: '#3a3a5a' }}>No results</p>
+            )}
+            {!searching && searchResults.length === 0 && !searchQuery.trim() && (
+              <p className="text-xs font-mono text-center py-8" style={{ color: '#3a3a5a' }}>Type to search for a track to request</p>
+            )}
+            <div className="space-y-2">
+              {searchResults.map((r, i) => (
+                <button
+                  key={i}
+                  onPointerDown={() => setSelectedTrack(r)}
+                  className="w-full text-left px-4 py-3 rounded-xl"
+                  style={{
+                    background: selectedTrack === r ? 'rgba(167,139,250,0.15)' : '#0a0a0f',
+                    border: selectedTrack === r ? '1px solid rgba(167,139,250,0.4)' : '1px solid #1e1e2e',
+                  }}
+                >
+                  <div className="text-sm font-bold truncate" style={{ color: '#e2e8f0' }}>{r.title}</div>
+                  <div className="text-xs font-mono mt-0.5 truncate" style={{ color: '#64748b' }}>{r.artist}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Submit panel */}
+          {selectedTrack && (
+            <div
+              className="flex-shrink-0 px-5 pb-8 pt-4 safe-bottom border-t"
+              style={{ borderColor: '#1e1e2e', background: '#050508' }}
+            >
+              <p className="text-[10px] font-mono mb-3" style={{ color: '#475569' }}>
+                REQUESTING: <span style={{ color: '#e2e8f0' }}>{selectedTrack.title}</span>
+              </p>
+
+              {tokenBalance > 0 && (
+                <div className="mb-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-mono" style={{ color: '#475569' }}>TOKENS TO SPEND</span>
+                    <span className="text-xs font-mono font-bold" style={{ color: '#a78bfa' }}>◈ {tokensToSpend}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={tokenBalance}
+                    value={tokensToSpend}
+                    onChange={e => setTokensToSpend(Number(e.target.value))}
+                    className="w-full"
+                    style={{ color: '#a78bfa' }}
+                  />
+                  <p className="text-[10px] font-mono mt-1" style={{ color: '#3a3a5a' }}>
+                    More tokens = higher priority in the queue
+                  </p>
+                </div>
+              )}
+
+              {requestMsg && (
+                <p className="text-xs font-mono mb-3 text-center" style={{ color: requestMsg === 'Request sent!' ? '#22c55e' : '#ef4444' }}>
+                  {requestMsg}
+                </p>
+              )}
+
+              <button
+                onPointerDown={handleSubmitRequest}
+                disabled={submitting || (tokenBalance === 0)}
+                className="w-full py-3.5 rounded-xl text-sm font-mono font-bold tracking-wider disabled:opacity-40"
+                style={{ background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.4)', color: '#a78bfa' }}
+              >
+                {submitting ? 'SENDING…' : tokenBalance === 0 ? 'NO TOKENS — SWIPE TO EARN' : `REQUEST · ◈ ${tokensToSpend}`}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

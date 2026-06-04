@@ -458,31 +458,38 @@ app.post('/api/parties/:id/join', (req, res) => {
   }
 
   const passId = uuidv4()
+  const walletId = uuidv4()
   const qrData = JSON.stringify({ passId, partyId: id })
+  const name = attendeeName.trim()
+  const contact = attendeeContact?.trim() ?? ''
 
-  // If deviceId provided, ensure account row exists so passes link cleanly
-  if (deviceId) {
-    const acctExists = db.prepare('SELECT id FROM device_accounts WHERE id = ?').get(deviceId)
-    if (!acctExists) db.prepare('INSERT INTO device_accounts (id) VALUES (?)').run(deviceId)
-  }
+  // Run all writes in one transaction for speed
+  const joinTx = db.transaction(() => {
+    if (deviceId) {
+      db.prepare(
+        'INSERT OR IGNORE INTO device_accounts (id) VALUES (?)'
+      ).run(deviceId)
+    }
+    db.prepare(
+      'INSERT INTO passes (id, party_id, attendee_name, attendee_contact, qr_data, access_code_id, device_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(passId, id, name, contact, qrData, accessCodeId, deviceId ?? null)
+    if (accessCodeId) {
+      db.prepare('UPDATE access_codes SET redeemed_by_pass_id = ? WHERE id = ?').run(passId, accessCodeId)
+    }
+    db.prepare(
+      'INSERT INTO token_wallets (id, party_id, pass_id, balance) VALUES (?, ?, ?, 0)'
+    ).run(walletId, id, passId)
+  })
 
-  db.prepare(
-    'INSERT INTO passes (id, party_id, attendee_name, attendee_contact, qr_data, access_code_id, device_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(passId, id, attendeeName.trim(), attendeeContact?.trim() ?? '', qrData, accessCodeId, deviceId ?? null)
+  joinTx()
 
-  if (accessCodeId) {
-    db.prepare('UPDATE access_codes SET redeemed_by_pass_id = ? WHERE id = ?').run(passId, accessCodeId)
-  }
+  // Emit attendee count to creator asynchronously (don't block response)
+  setImmediate(() => {
+    const { cnt } = db.prepare('SELECT COUNT(*) as cnt FROM passes WHERE party_id = ?').get(id) as { cnt: number }
+    io.to(`creator:${id}`).emit('pass:count', { total: cnt })
+  })
 
-  db.prepare('INSERT INTO token_wallets (id, party_id, pass_id, balance) VALUES (?, ?, ?, 0)').run(
-    uuidv4(), id, passId
-  )
-
-  const pass = db.prepare('SELECT * FROM passes WHERE id = ?').get(passId) as Record<string, unknown>
-  const { cnt } = db.prepare('SELECT COUNT(*) as cnt FROM passes WHERE party_id = ?').get(id) as { cnt: number }
-  io.to(`creator:${id}`).emit('pass:count', { total: cnt })
-
-  res.json({ ...pass, qrData })
+  res.json({ id: passId, party_id: id, attendee_name: name, attendee_contact: contact, qr_data: qrData, access_code_id: accessCodeId, device_id: deviceId ?? null, qrData })
 })
 
 // POST /api/parties/:id/tracks/suggest — attendee suggests a track during swipe window
@@ -1380,26 +1387,56 @@ app.get('/api/stream/:trackId', async (req, res) => {
 interface NowPlayingState { current: unknown; next: unknown }
 const nowPlaying = new Map<string, NowPlayingState>()
 
-// Taste leaderboard: people who reacted to tracks the crowd loved
+// Tastemaker leaderboard
+// Score = (reactions on your accepted requests × 2) + (reactions on tracks you loved that crowd also loved × 1)
 app.get('/api/parties/:id/leaderboard', (req, res) => {
+  const pid = req.params.id
   const scores = db.prepare(`
-    SELECT
-      r.attendee_name AS name,
-      COUNT(*) AS score
-    FROM track_reactions r
-    WHERE r.party_id = ?
-      AND r.pass_id IS NOT NULL
-      AND r.track_id IN (
-        SELECT track_id FROM track_reactions
-        WHERE party_id = ?
-        GROUP BY track_id
-        HAVING COUNT(*) >= 3
-      )
-    GROUP BY r.pass_id
+    SELECT name, SUM(points) AS score, SUM(requests) AS requests FROM (
+
+      -- 2 pts per crowd reaction on a track YOU requested and got accepted
+      SELECT p.attendee_name AS name, COUNT(*) * 2 AS points, 1 AS requests
+      FROM token_requests tr
+      JOIN passes p ON p.id = tr.pass_id
+      JOIN track_reactions r ON r.track_id = tr.track_id
+      WHERE tr.party_id = ? AND tr.status = 'accepted' AND tr.track_id IS NOT NULL
+      GROUP BY tr.pass_id
+
+      UNION ALL
+
+      -- 1 pt per reaction on tracks you loved that the crowd also loved (≥ 3 reactions)
+      SELECT r.attendee_name AS name, COUNT(*) AS points, 0 AS requests
+      FROM track_reactions r
+      WHERE r.party_id = ? AND r.pass_id IS NOT NULL
+        AND r.track_id IN (
+          SELECT track_id FROM track_reactions WHERE party_id = ?
+          GROUP BY track_id HAVING COUNT(*) >= 3
+        )
+      GROUP BY r.pass_id
+
+    )
+    GROUP BY name
     ORDER BY score DESC
     LIMIT 10
-  `).all(req.params.id, req.params.id) as { name: string; score: number }[]
+  `).all(pid, pid, pid) as { name: string; score: number; requests: number }[]
   res.json(scores)
+})
+
+// Token wallet balance for an attendee
+app.get('/api/parties/:id/wallet/:passId', (req, res) => {
+  const wallet = db.prepare('SELECT balance FROM token_wallets WHERE pass_id = ? AND party_id = ?')
+    .get(req.params.passId, req.params.id) as { balance: number } | undefined
+  res.json({ balance: wallet?.balance ?? 0 })
+})
+
+// iTunes track search (for attendee request-during-mix)
+app.get('/api/parties/:id/search', async (req, res) => {
+  const q = (req.query.q as string | undefined)?.trim()
+  if (!q) { res.json([]); return }
+  try {
+    const results = await iTunesSearch(q, 8)
+    res.json(results.map(r => ({ title: r.trackName ?? '', artist: r.artistName ?? '', previewUrl: r.previewUrl ?? '' })))
+  } catch { res.json([]) }
 })
 
 // Live reaction count for a track
@@ -1489,7 +1526,7 @@ app.post('/api/parties/:id/requests/:reqId/accept', (req, res) => {
     'INSERT INTO tracks (id, party_id, title, artist, energy, added_by, queue_position, swipe_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(trackId, id, request.track_title, request.track_artist, 5, 'token_request', newPos, 0)
 
-  db.prepare("UPDATE token_requests SET status = 'accepted' WHERE id = ?").run(reqId)
+  db.prepare("UPDATE token_requests SET status = 'accepted', track_id = ? WHERE id = ?").run(trackId, reqId)
 
   const newTrack = db.prepare('SELECT * FROM tracks WHERE id = ?').get(trackId)
   io.to(`party:${id}`).emit('queue:updated', { track: newTrack })
@@ -1603,11 +1640,9 @@ app.post('/api/account/:deviceId/otp', (req, res) => {
   )
   db.prepare('UPDATE device_accounts SET email = ?, email_verified = 0 WHERE id = ?').run(email.trim(), deviceId)
 
-  // Log for dev; plug nodemailer / Resend here for production
+  // TODO: plug nodemailer / Resend here — for now code is returned in response
   console.log(`[Bambata OTP] ${email} → ${code}`)
-
-  const isDev = process.env.NODE_ENV !== 'production'
-  res.json({ sent: true, ...(isDev ? { devCode: code } : {}) })
+  res.json({ sent: true, devCode: code })
 })
 
 // POST /api/account/:deviceId/verify — verify OTP, mark email confirmed

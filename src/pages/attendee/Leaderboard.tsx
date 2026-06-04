@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 
-interface LeaderEntry { name: string; score: number }
+interface LeaderEntry { name: string; score: number; requests: number }
 
 const MEDALS = ['🥇', '🥈', '🥉']
 
@@ -27,7 +27,7 @@ export default function Leaderboard() {
   }, [partyId])
 
   return (
-    <div className="min-h-screen flex flex-col px-5 py-8" style={{ background: '#050508' }}>
+    <div className="min-h-screen flex flex-col px-5 py-8 safe-top safe-bottom" style={{ background: '#050508' }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <button
@@ -50,7 +50,7 @@ export default function Leaderboard() {
           TOP TASTE
         </h1>
         <p className="text-xs font-mono mt-1" style={{ color: '#3a3a5a' }}>
-          People who vibed with the crowd
+          People whose picks the crowd loved most
         </p>
       </div>
 
@@ -77,12 +77,15 @@ export default function Leaderboard() {
               }}
             >
               <span className="text-xl w-8 text-center flex-shrink-0">
-                {MEDALS[i] ?? <span className="text-sm font-mono" style={{ color: '#475569' }}>#{i + 1}</span>}
+                {i < 3 ? MEDALS[i] : <span className="text-sm font-mono" style={{ color: '#475569' }}>#{i + 1}</span>}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="font-bold truncate" style={{ color: '#e2e8f0' }}>{entry.name}</div>
-                <div className="text-xs font-mono mt-0.5" style={{ color: '#475569' }}>
-                  {entry.score} crowd reaction{entry.score !== 1 ? 's' : ''}
+                <div className="text-xs font-mono mt-0.5 flex items-center gap-2" style={{ color: '#475569' }}>
+                  <span>🔥 {entry.score} crowd reaction{entry.score !== 1 ? 's' : ''}</span>
+                  {entry.requests > 0 && (
+                    <span style={{ color: '#a78bfa' }}>· {entry.requests} accepted request{entry.requests !== 1 ? 's' : ''}</span>
+                  )}
                 </div>
               </div>
               {i === 0 && (
@@ -98,9 +101,12 @@ export default function Leaderboard() {
         </div>
       )}
 
-      <p className="text-center text-[10px] font-mono mt-8" style={{ color: '#1e1e2e' }}>
-        Score = reactions on tracks the crowd loved
-      </p>
+      <div className="mt-8 px-4 py-3 rounded-xl" style={{ background: '#0a0a0f', border: '1px solid #1e1e2e' }}>
+        <p className="text-[10px] font-mono" style={{ color: '#3a3a5a' }}>
+          HOW IT WORKS — React to tracks you love. Request songs with tokens.<br />
+          Accepted requests that the crowd loves = 2pts · Crowd-loved reactions = 1pt
+        </p>
+      </div>
     </div>
   )
 }

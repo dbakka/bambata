@@ -11,6 +11,7 @@ export default function Landing() {
   const [form, setForm] = useState({ name: '', code: '' })
   const [showCode, setShowCode] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [slow, setSlow] = useState(false)
   const [error, setError] = useState('')
   const [fetchError, setFetchError] = useState('')
 
@@ -20,7 +21,6 @@ export default function Landing() {
     const stored = localStorage.getItem(`bambata_pass_${partyId}`)
     if (stored) {
       const p = JSON.parse(stored) as Pass
-      // Already have a pass — route based on current party status
       fetch(`/api/parties/${partyId}`)
         .then((r) => r.json() as Promise<Party>)
         .then((party) => {
@@ -32,6 +32,7 @@ export default function Landing() {
       return
     }
 
+    // Fetch party info (also warms up the server so JOIN is fast)
     fetch(`/api/parties/${partyId}`)
       .then((r) => {
         if (!r.ok) throw new Error('Not found')
@@ -45,7 +46,12 @@ export default function Landing() {
     e.preventDefault()
     if (!partyId || !form.name.trim()) return
     setLoading(true)
+    setSlow(false)
     setError('')
+
+    const controller = new AbortController()
+    const slowTimer = setTimeout(() => setSlow(true), 6000)
+    const killTimer = setTimeout(() => controller.abort(), 20000)
 
     try {
       const res = await fetch(`/api/parties/${partyId}/join`, {
@@ -56,6 +62,7 @@ export default function Landing() {
           code: form.code.trim() || undefined,
           deviceId: getDeviceId(),
         }),
+        signal: controller.signal,
       })
 
       if (!res.ok) {
@@ -66,16 +73,22 @@ export default function Landing() {
       const pass = (await res.json()) as Pass
       localStorage.setItem(`bambata_pass_${partyId}`, JSON.stringify(pass))
 
-      // Route based on current party state
       if (party?.status === 'swipe_open') {
         navigate(`/party/${partyId}/swipe`)
       } else {
         navigate(`/party/${partyId}/pass`)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong')
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError('Connection timed out. Tap to try again.')
+      } else {
+        setError(err instanceof Error ? err.message : 'Something went wrong')
+      }
     } finally {
+      clearTimeout(slowTimer)
+      clearTimeout(killTimer)
       setLoading(false)
+      setSlow(false)
     }
   }
 
@@ -194,7 +207,7 @@ export default function Landing() {
           <button
             type="submit"
             disabled={loading || !form.name.trim()}
-            className="w-full py-4 rounded-xl font-bold text-sm tracking-wider transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 mt-2"
+            className="w-full py-4 rounded-xl font-bold text-sm tracking-wider disabled:opacity-50 mt-2 flex flex-col items-center gap-1"
             style={{
               background: 'linear-gradient(135deg, rgba(167,139,250,0.2) 0%, rgba(167,139,250,0.1) 100%)',
               border: '1px solid rgba(167,139,250,0.4)',
@@ -202,7 +215,10 @@ export default function Landing() {
               fontFamily: 'JetBrains Mono, monospace',
             }}
           >
-            {loading ? 'JOINING...' : party.status === 'swipe_open' ? 'JOIN & VOTE NOW' : "I'M IN"}
+            {loading ? (slow ? 'ALMOST THERE…' : 'JOINING...') : party.status === 'swipe_open' ? 'JOIN & VOTE NOW' : "I'M IN"}
+            {slow && (
+              <span className="text-[9px] font-mono opacity-60 tracking-wider">server is waking up</span>
+            )}
           </button>
         </form>
       </div>
