@@ -4,7 +4,12 @@ import { Server as SocketServer } from 'socket.io'
 import cors from 'cors'
 import { v4 as uuidv4 } from 'uuid'
 import { Readable } from 'stream'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import db from './db.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 const app = express()
 const httpServer = createServer(app)
@@ -1622,9 +1627,23 @@ app.post('/api/account/:deviceId/verify', (req, res) => {
   res.json(account)
 })
 
+// ─── Health check ────────────────────────────────────────────────────────────
+app.get('/api/health', (_req, res) => res.json({ ok: true }))
+
+// ─── Serve React app in production ───────────────────────────────────────────
+
+if (process.env.NODE_ENV === 'production') {
+  const distDir = path.join(__dirname, '..', 'dist')
+  app.use(express.static(distDir))
+  // All non-API routes return the React shell — React Router handles the rest
+  app.get(/^(?!\/api|\/socket\.io).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'))
+  })
+}
+
 // ─── Start server ─────────────────────────────────────────────────────────────
 
-const PORT = 3001
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001
 httpServer.listen(PORT, () => {
   console.log(`Bambata server running on http://localhost:${PORT}`)
 })
