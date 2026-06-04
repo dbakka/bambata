@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Database (runtime data — not source)
+*.db
+*.db-shm
+*.db-wal
+
+# Large ML model (download separately via scripts/setup-demucs-onnx.py)
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env / secrets
+.env
+.env.local
+.env.*.local
+
+# Claude Code local settings (personal, not project-wide)
+.claude/settings.local.json
+
+# Logs
+*.log
+npm-debug.log*
