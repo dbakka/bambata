@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { io, Socket } from 'socket.io-client'
+import { getDeviceId } from '../utils/deviceId'
 
 export function usePartySocket(partyId: string): Socket {
   const socketRef = useRef<Socket | null>(null)
@@ -31,7 +32,7 @@ export function useCreatorSocket(partyId: string, creatorToken: string): Socket 
   useEffect(() => {
     const socket = socketRef.current!
     socket.connect()
-    socket.emit('join:creator', { partyId, creatorToken })
+    socket.emit('join:creator', { partyId, creatorToken, deviceId: getDeviceId() })
 
     return () => {
       socket.disconnect()

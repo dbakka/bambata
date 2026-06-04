@@ -35,12 +35,15 @@ function randomCode(prefix: string): string {
   return code
 }
 
-function requireCreatorToken(partyId: string, token: string | undefined): boolean {
-  if (!token) return false
-  const party = db.prepare('SELECT creator_token FROM parties WHERE id = ?').get(partyId) as
-    | { creator_token: string }
+function requireCreatorToken(partyId: string, token: string | undefined, deviceId?: string): boolean {
+  const party = db.prepare('SELECT creator_token, device_id FROM parties WHERE id = ?').get(partyId) as
+    | { creator_token: string; device_id: string | null }
     | undefined
-  return party?.creator_token === token
+  if (!party) return false
+  if (token && party.creator_token === token) return true
+  // Device-ID fallback: same phone that created the party counts as creator
+  if (deviceId && party.device_id && party.device_id === deviceId) return true
+  return false
 }
 
 interface Track {
@@ -254,7 +257,8 @@ app.get('/api/parties/:id', (req, res) => {
     return
   }
 
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
   const isCreator = token && token === party.creator_token
 
   if (!isCreator) {
@@ -269,9 +273,10 @@ app.get('/api/parties/:id', (req, res) => {
 // PATCH /api/parties/:id/status
 app.patch('/api/parties/:id/status', (req, res) => {
   const { id } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
 
-  if (!requireCreatorToken(id, token)) {
+  if (!requireCreatorToken(id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -319,9 +324,10 @@ app.patch('/api/parties/:id/status', (req, res) => {
 // GET /api/parties/:id/codes
 app.get('/api/parties/:id/codes', (req, res) => {
   const { id } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
 
-  if (!requireCreatorToken(id, token)) {
+  if (!requireCreatorToken(id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -333,9 +339,10 @@ app.get('/api/parties/:id/codes', (req, res) => {
 // POST /api/parties/:id/codes
 app.post('/api/parties/:id/codes', (req, res) => {
   const { id } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
 
-  if (!requireCreatorToken(id, token)) {
+  if (!requireCreatorToken(id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -550,9 +557,10 @@ app.get('/api/parties/:id/tracks', (req, res) => {
 // POST /api/parties/:id/tracks
 app.post('/api/parties/:id/tracks', (req, res) => {
   const { id } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
 
-  if (!requireCreatorToken(id, token)) {
+  if (!requireCreatorToken(id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -606,9 +614,10 @@ app.post('/api/parties/:id/tracks', (req, res) => {
 // DELETE /api/parties/:id/tracks/:trackId
 app.delete('/api/parties/:id/tracks/:trackId', (req, res) => {
   const { id, trackId } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
 
-  if (!requireCreatorToken(id, token)) {
+  if (!requireCreatorToken(id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -896,7 +905,8 @@ app.get('/api/passes/:passId', (req, res) => {
 
 app.post('/api/passes/:passId/scan', (req, res) => {
   const { passId } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
 
   const pass = db.prepare('SELECT * FROM passes WHERE id = ?').get(passId) as
     | { id: string; party_id: string; attendee_name: string; scanned_at: number | null }
@@ -906,7 +916,7 @@ app.post('/api/passes/:passId/scan', (req, res) => {
     return
   }
 
-  if (!requireCreatorToken(pass.party_id, token)) {
+  if (!requireCreatorToken(pass.party_id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -1499,8 +1509,9 @@ app.get('/api/parties/:id/attendees', (req, res) => {
 // POST /api/parties/:id/requests/:reqId/accept — accept request, add track to queue
 app.post('/api/parties/:id/requests/:reqId/accept', (req, res) => {
   const { id, reqId } = req.params
-  const token = req.headers['x-creator-token'] as string | undefined
-  if (!requireCreatorToken(id, token)) {
+  const token = req.headers["x-creator-token"] as string | undefined
+  const deviceId = req.headers["x-device-id"] as string | undefined
+  if (!requireCreatorToken(id, token, deviceId)) {
     res.status(403).json({ error: 'Forbidden' })
     return
   }
@@ -1542,8 +1553,8 @@ io.on('connection', (socket) => {
     socket.join(`party:${partyId}`)
   })
 
-  socket.on('join:creator', ({ partyId, creatorToken }: { partyId: string; creatorToken: string }) => {
-    if (requireCreatorToken(partyId, creatorToken)) {
+  socket.on('join:creator', ({ partyId, creatorToken, deviceId: dId }: { partyId: string; creatorToken: string; deviceId?: string }) => {
+    if (requireCreatorToken(partyId, creatorToken, dId)) {
       socket.join(`creator:${partyId}`)
       socket.join(`party:${partyId}`)
     }

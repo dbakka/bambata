@@ -6,6 +6,7 @@ import { CountdownTimer } from '../../components/CountdownTimer'
 import { useCreatorSocket } from '../../hooks/useSocket'
 import { destroyEngine } from '../../modules/mixing/engineSingleton'
 import ClaimAccount from '../../components/ClaimAccount'
+import { getDeviceId } from '../../utils/deviceId'
 
 type Tab = 'setup' | 'live' | 'queue' | 'requests' | 'cast'
 
@@ -45,6 +46,7 @@ export default function Dashboard() {
   const { partyId } = useParams<{ partyId: string }>()
   const navigate = useNavigate()
   const creatorToken = partyId ? localStorage.getItem(`bambata_creator_${partyId}`) ?? '' : ''
+  const deviceId = getDeviceId()
 
   const [party, setParty] = useState<Party | null>(null)
   const [tracks, setTracks] = useState<Track[]>([])
@@ -78,7 +80,7 @@ export default function Dashboard() {
 
   const fetchAll = useCallback(async () => {
     if (!partyId) return
-    const headers = { 'x-creator-token': creatorToken }
+    const headers = { 'x-creator-token': creatorToken, 'x-device-id': deviceId }
     const [partyRes, tracksRes, codesRes] = await Promise.all([
       fetch(`/api/parties/${partyId}`, { headers }),
       fetch(`/api/parties/${partyId}/tracks`),
@@ -102,7 +104,7 @@ export default function Dashboard() {
   const fetchRequests = useCallback(async () => {
     if (!partyId) return
     const res = await fetch(`/api/parties/${partyId}/requests`, {
-      headers: { 'x-creator-token': creatorToken },
+      headers: { 'x-creator-token': creatorToken, 'x-device-id': deviceId },
     })
     if (res.ok) setRequests(await res.json() as TokenRequest[])
   }, [partyId, creatorToken])
@@ -190,7 +192,7 @@ export default function Dashboard() {
     try {
       const res = await fetch(`/api/parties/${partyId}/tracks`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+        headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
         body: JSON.stringify({
           title: addForm.title,
           artist: addForm.artist,
@@ -219,7 +221,7 @@ export default function Dashboard() {
     if (!partyId) return
     await fetch(`/api/parties/${partyId}/tracks/${trackId}`, {
       method: 'DELETE',
-      headers: { 'x-creator-token': creatorToken },
+      headers: { 'x-creator-token': creatorToken, 'x-device-id': deviceId },
     })
     setTracks((prev) => prev.filter((t) => t.id !== trackId))
   }
@@ -228,7 +230,7 @@ export default function Dashboard() {
     if (!partyId) return
     const res = await fetch(`/api/parties/${partyId}/codes`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
       body: JSON.stringify(
         type === 'pass'
           ? { type: 'pass', count: 10 }
@@ -246,7 +248,7 @@ export default function Dashboard() {
     setShowOpenConfirm(false)
     const res = await fetch(`/api/parties/${partyId}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
       body: JSON.stringify({ status: 'swipe_open' }),
     })
     if (res.ok) {
@@ -262,7 +264,7 @@ export default function Dashboard() {
     destroyEngine()
     await fetch(`/api/parties/${partyId}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
       body: JSON.stringify({ status: 'done' }),
     })
     await fetchAll()
@@ -272,7 +274,7 @@ export default function Dashboard() {
     if (!partyId) return
     const res = await fetch(`/api/parties/${partyId}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
       body: JSON.stringify({ status: 'pending' }),
     })
     if (res.ok) {
@@ -286,7 +288,7 @@ export default function Dashboard() {
     if (!partyId) return
     const res = await fetch(`/api/parties/${partyId}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken },
+      headers: { 'Content-Type': 'application/json', 'x-creator-token': creatorToken, 'x-device-id': deviceId },
       body: JSON.stringify({ status: 'mixing' }),
     })
     if (res.ok) {
@@ -312,7 +314,7 @@ export default function Dashboard() {
     try {
       const res = await fetch(`/api/parties/${partyId}/requests/${reqId}/accept`, {
         method: 'POST',
-        headers: { 'x-creator-token': creatorToken },
+        headers: { 'x-creator-token': creatorToken, 'x-device-id': deviceId },
       })
       if (res.ok) {
         setRequests((prev) =>
